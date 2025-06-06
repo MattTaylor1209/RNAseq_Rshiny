@@ -334,7 +334,7 @@ server <- function(input, output, session) {
                       box.padding = 0.5,      # Increases space around labels
                       point.padding = 0.3,    # Increases distance from points
                       min.segment.length = 0) +  # Add sample labels
-      scale_shape_manual(values = c(20:25)) + # Change this depending on how many shapes you want, 21-25 are decent
+      scale_shape_manual(values = c(21:25, 21:25)) + # Change this depending on how many shapes you want, 21-25 are decent
       guides(fill = guide_legend(override.aes = list(shape = 22))) +
       theme_minimal() +
       labs(
