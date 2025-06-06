@@ -59,7 +59,7 @@ ui <- fluidPage(
                   choices = c(
                     "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
                     "Mouse (Mus musculus)" = "org.Mm.eg.db",
-                    "Drosophila (Drosophila melanogaster" = "org.Dm.eg.db"
+                    "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db"
                   ),
                   selected = "org.Rn.eg.db"
       ),
@@ -135,6 +135,12 @@ server <- function(input, output, session) {
     unique(as.character(sample_info()$Group))
   })
   
+  observeEvent(sample_info(), {
+    updateSelectInput(session, "groupOrder",
+                      choices = group_levels(),
+                      selected = group_levels())
+  })
+  
   # UI to specify the order of those groups
   output$groupOrderUI <- renderUI({
     req(group_levels())
@@ -160,6 +166,15 @@ server <- function(input, output, session) {
     )
   })
   
+  observeEvent(input$groupOrder, {
+    updateSelectInput(session, "contrastNumerator",
+                      choices = input$groupOrder,
+                      selected = tail(input$groupOrder, 1))  # or whatever default
+    updateSelectInput(session, "contrastDenominator",
+                      choices = input$groupOrder,
+                      selected = head(input$groupOrder, 1))
+  })
+  
   # Preview featureCounts input
   output$previewTable <- renderTable({
     counts <- counts_data()$counts
@@ -176,7 +191,9 @@ server <- function(input, output, session) {
   
   analysisResults <- eventReactive(input$analyzeBtn, {
     withProgress(message = "Running RNA-seq analysis", value = 0, {
-      orgdb <- isolate(get(input$organism))
+      orgdb_name <- isolate(input$organism)
+      orgdb <- isolate(get(orgdb_name))
+      
       counts <- counts_data()$counts
       colnames(counts) <- sample_info()$SampleName
       
@@ -237,10 +254,17 @@ server <- function(input, output, session) {
       uni_gene_symbols <- rownames(res)  # Get gene symbols from DESeq2 results
       
       # Step 2: Map gene symbols to Entrez IDs using bitr
-      uni_entrez_ids <- bitr(uni_gene_symbols, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = orgdb)
+      
+      if (orgdb_name == "org.Dm.eg.db") {
+        from_type <- "FLYBASE"
+      } else {
+        from_type <- "SYMBOL"
+      }
+      
+      uni_entrez_ids <- bitr(uni_gene_symbols, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
       
       # Step 3: Merge the DESeq2 results (res) with the Entrez IDs 
-      res_entrez <- merge(as.data.frame(res), uni_entrez_ids, by.x = "row.names", by.y = "SYMBOL")
+      res_entrez <- merge(as.data.frame(res), uni_entrez_ids, by.x = "row.names", by.y = from_type)
       
       # Step 4: rename the first column to "GeneIDs"
       res_entrez <- res_entrez %>% rename(GeneIDs = Row.names)
@@ -310,7 +334,7 @@ server <- function(input, output, session) {
                       box.padding = 0.5,      # Increases space around labels
                       point.padding = 0.3,    # Increases distance from points
                       min.segment.length = 0) +  # Add sample labels
-      scale_shape_manual(values = c(21, 24, 22)) + # Change this depending on how many shapes you want, 21-25 are decent
+      scale_shape_manual(values = c(20:25)) + # Change this depending on how many shapes you want, 21-25 are decent
       guides(fill = guide_legend(override.aes = list(shape = 22))) +
       theme_minimal() +
       labs(
