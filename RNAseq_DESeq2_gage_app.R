@@ -67,6 +67,7 @@ ui <- fluidPage(
       numericInput("padjThreshold", "Adjusted p-value threshold", value = 0.05, min = 0, max = 1),
       uiOutput("groupOrderUI"),
       uiOutput("contrastSelectUI"),
+      uiOutput("flybaseCheckboxUI"),
       actionButton("analyzeBtn", "Run Analysis"),
       verbatimTextOutput("log"),
       tags$hr(),
@@ -189,6 +190,14 @@ server <- function(input, output, session) {
     sample_info()
   })
   
+  output$flybaseCheckboxUI <- renderUI({
+    req(input$organism)
+    if (input$organism == "org.Dm.eg.db") {
+      checkboxInput("convertFlybase", "Convert FlyBase IDs?", value = TRUE)
+    }
+  })
+  
+  
   analysisResults <- eventReactive(input$analyzeBtn, {
     withProgress(message = "Running RNA-seq analysis", value = 0, {
       orgdb_name <- isolate(input$organism)
@@ -216,7 +225,25 @@ server <- function(input, output, session) {
         design = ~ Group
       )
       
+      # Convert FLYBASE identifiers to symbols if checkbox ticked:
       
+      if (orgdb_name == "org.Dm.eg.db") {
+        if (isTRUE(isolate(input$convertFlybase))) {
+          # Get the mapped gene symbols
+          gene_symbols <- mapIds(
+            orgdb,
+            keys = rownames(dds),
+            column = "SYMBOL",
+            keytype = "FLYBASE",
+            multiVals = "first"
+          )
+          
+          # Drop any rows with NA gene symbols
+          keep_idx <- !is.na(gene_symbols)
+          dds <- dds[keep_idx, ]
+          rownames(dds) <- gene_symbols[keep_idx]
+        }
+      }
       incProgress(0.1)
       
       # filter our low counts
@@ -255,11 +282,16 @@ server <- function(input, output, session) {
       
       # Step 2: Map gene symbols to Entrez IDs using bitr
       
-      if (orgdb_name == "org.Dm.eg.db") {
-        from_type <- "FLYBASE"
+      from_type <- if (orgdb_name == "org.Dm.eg.db") {
+        if (isTRUE(isolate(input$convertFlybase))) {
+          "SYMBOL"
+        } else {
+          "FLYBASE"
+        }
       } else {
-        from_type <- "SYMBOL"
+        "SYMBOL"
       }
+      
       
       uni_entrez_ids <- bitr(uni_gene_symbols, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
       
