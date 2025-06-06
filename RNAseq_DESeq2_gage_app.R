@@ -9,22 +9,74 @@
 
 # Required packages
 
-biocmanager_packages <- c("limma", "edgeR", "Glimma",
-                          "org.Dm.eg.db","org.Mm.eg.db", "org.Rn.eg.db",
-                          "gplots", "RColorBrewer", "NMF", "BiasedUrn", 
-                          "GO.db", "qusage", "Rsamtools","Rsubread", 
-                          "GenomicFeatures", "Rfastp", "biomaRt", "DESeq2",
-                          "IHW", "topGO", "apeglm", "clusterProfiler", "ashr",
-                          "goseq", "KEGGREST", "msigdbr", "GSEABase",
-                          "gage", "gageData", "pathview", "sva", "RUVSeq", "vsn",
-                          "biomaRt")
+biocmanager_packages <- c(
+  "limma",
+  "edgeR",
+  "Glimma",
+  "org.Dm.eg.db",
+  "org.Mm.eg.db",
+  "org.Rn.eg.db",
+  "org.Hs.eg.db",
+  "gplots",
+  "RColorBrewer",
+  "NMF",
+  "BiasedUrn",
+  "GO.db",
+  "qusage",
+  "Rsamtools",
+  "Rsubread",
+  "GenomicFeatures",
+  "Rfastp",
+  "biomaRt",
+  "DESeq2",
+  "IHW",
+  "topGO",
+  "apeglm",
+  "clusterProfiler",
+  "ashr",
+  "goseq",
+  "KEGGREST",
+  "msigdbr",
+  "GSEABase",
+  "gage",
+  "gageData",
+  "pathview",
+  "sva",
+  "RUVSeq",
+  "vsn",
+  "biomaRt"
+)
 
-other_packages <- c("DBI", "tidyverse", "readxl", "multcomp",
-                    "ggthemes", "ggpubr", "ggsignif", "ggrepel", "lsmeans", 
-                    "rstatix", "ggtext", "RColorBrewer", "ggsci", "ggprism", 
-                    "patchwork", "minpack.lm", "markdown", "treemap", "VennDiagram",
-                    "grid", "ggVennDiagram", "eulerr", "pheatmap", "plotly", "htmlwidgets",
-                    "shiny", "shinyFiles", "DT" )
+other_packages <- c(
+  "DBI",
+  "tidyverse",
+  "readxl",
+  "multcomp",
+  "ggthemes",
+  "ggpubr",
+  "ggsignif",
+  "ggrepel",
+  "lsmeans",
+  "rstatix",
+  "ggtext",
+  "RColorBrewer",
+  "ggsci",
+  "ggprism",
+  "patchwork",
+  "minpack.lm",
+  "markdown",
+  "treemap",
+  "VennDiagram",
+  "grid",
+  "ggVennDiagram",
+  "eulerr",
+  "pheatmap",
+  "plotly",
+  "htmlwidgets",
+  "shiny",
+  "shinyFiles",
+  "DT"
+)
 
 # Install packages not yet installed
 
@@ -59,6 +111,7 @@ ui <- fluidPage(
                   choices = c(
                     "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
                     "Mouse (Mus musculus)" = "org.Mm.eg.db",
+                    "Human (Homo sapiens)" = "org.Hs.eg.db",
                     "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db"
                   ),
                   selected = "org.Rn.eg.db"
