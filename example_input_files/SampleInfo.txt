@@ -1,0 +1,10 @@
+FileName	SampleName	Group
+SRR22341773_TBI2_1.fastq.subread.BAM	TBI2	TBI
+SRR22341774_TBI1_1.fastq.subread.BAM	TBI1	TBI
+SRR22341775_sham4_1.fastq.subread.BAM	sham4	sham
+SRR22341776_sham3_1.fastq.subread.BAM	sham3	sham
+SRR22341777_sham2_1.fastq.subread.BAM	sham2	sham
+SRR22341778_sham1_1.fastq.subread.BAM	sham1	sham
+SRR22341781_TBI4_1.fastq.subread.BAM	TBI4	TBI
+SRR22341782_TBI3_1.fastq.subread.BAM	TBI3	TBI
+
