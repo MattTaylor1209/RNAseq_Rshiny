@@ -69,8 +69,14 @@ ui <- fluidPage(
       uiOutput("contrastSelectUI"),
       uiOutput("flybaseCheckboxUI"),
       actionButton("analyzeBtn", "Run Analysis"),
-      verbatimTextOutput("log"),
       tags$hr(),
+      h4("GSEA"),
+      selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
+      selectInput("gseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
+      numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
+      numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
+      numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
+      actionButton("runGSEA", "Run GSEA"),
       conditionalPanel(
         condition = "output.inputsReady",
         checkboxInput("viewPreview", "Preview input files", value = TRUE)
@@ -85,11 +91,18 @@ ui <- fluidPage(
           tabPanel("Sample Info", tableOutput("sampleInfo")),
           tabPanel("PCA", plotOutput("pcaPlot")),
           tabPanel("DE Results", dataTableOutput("deTable")),
-          tabPanel("Pathways", plotOutput("pathwayPlot")),
+          tabPanel("GSEA",
+                   plotOutput("gseaDotplot"),
+                   selectizeInput("gseaTerm", "Show enrichment plot for:", choices = NULL, multiple = FALSE),
+                   plotOutput("gseaEnrichPlot"),
+                   DT::dataTableOutput("gseaTable"),
+                   downloadButton("dl_gsea", "Download GSEA table")
+          ),
           tabPanel("Volcano Plot", plotlyOutput("volcanoPlot"),
                    plotOutput("geneBoxplot"))
         )
-      )
+      ),
+      verbatimTextOutput("log")
     )
   )
 )
@@ -316,31 +329,8 @@ server <- function(input, output, session) {
       pca_df$SampleName <- sample_info()$SampleName  # Add sample names
       pca_df$Group <- sample_info()$Group  # Add group info
       
-      incProgress(0.1)
       
-      # GSEGO
-      
-      appendLog("GSE analysis...")
-      showNotification("GSE analysis...", type="message")
-      # Rank the genes by their log2 fold change
-      ranked_genes <- res_entrez$log2FoldChange
-      names(ranked_genes) <- res_entrez$ENTREZID
-      
-      # Remove any NA values from the ranked list
-      ranked_genes <- na.omit(ranked_genes)
-      
-      # Sort the list by the ranking metric (log2FoldChange in this case)
-      ranked_genes <- sort(ranked_genes, decreasing = TRUE)
-      
-      # Perform GSEA for GO Biological Process (BP) terms
-      gsego_results <- gseGO(geneList = ranked_genes,
-                             OrgDb = orgdb,    # Use the appropriate organism database
-                             ont = "BP",             # Biological Process ontology
-                             keyType = "ENTREZID",   # The gene identifiers used (ENTREZ IDs)
-                             pvalueCutoff = 0.05,    # p-value threshold
-                             verbose = FALSE,
-                             eps = 1e-300)
-      incProgress(0.1)
+      incProgress(0.2)
       
       
       appendLog("Analysis complete.")
@@ -349,9 +339,10 @@ server <- function(input, output, session) {
     })
     # Output from reactive expression
     list(dds = dds, res = res, vsd = vsd, pca_df = pca_df, percentVar = percentVar,
-         res_entrez = res_entrez, gsego_results = gsego_results)
+         res_entrez = res_entrez)
     
   })
+  
   
   # PCA plot
   output$pcaPlot <- renderPlot({
@@ -382,13 +373,84 @@ server <- function(input, output, session) {
     datatable(as.data.frame(analysisResults()$res))
   })
   
-  output$pathwayPlot <- renderPlot({
+  
+  gseaResults <- eventReactive(input$runGSEA, {
     req(analysisResults())
+    ba <- analysisResults()
     
-    gsego_results <- analysisResults()$gsego_results
     
-    dotplot(gsego_results, showCategory = 10)
+    orgdb_name <- isolate(input$organism)
+    orgdb <- isolate(get(orgdb_name))
+    
+    # 1) Choose the ranking metric (use unshrunk 'stat' if available)
+    metric_col <- switch(input$gseaMetric,
+                         stat = "stat",
+                         log2FoldChange = "log2FoldChange")
+    
+    validate(need(metric_col %in% names(ba$res_entrez),
+                  sprintf("Column '%s' not found in DE results.", metric_col)))
+    
+    m <- ba$res_entrez[[metric_col]]
+    names(m) <- ba$res_entrez$ENTREZID
+    
+    # 2) Clean: drop NA/Inf, collapse duplicates (keep max), sort
+    ok <- is.finite(m)
+    m <- m[ok]
+    
+    # tapply returns an array; coerce back to a plain named numeric vector
+    m <- tapply(m, names(m), max)                  # collapse dup ENTREZ to max
+    m <- sort(m, decreasing = TRUE)
+    m <- setNames(as.vector(m), names(m))          # <-- ensure class "numeric" w/ names
+    
+    validate(need(length(m) >= input$gseaMin,
+                  "Not enough ranked genes to run GSEA."))
+    
+    # 3) Call gseGO; add eps=0 if your clusterProfiler supports it
+    args <- list(
+      geneList     = m,
+      OrgDb        = orgdb,
+      keyType      = "ENTREZID",
+      ont          = input$gseaOnt,
+      minGSSize    = input$gseaMin,
+      maxGSSize    = input$gseaMax,
+      pvalueCutoff = input$gseaP,
+      verbose      = FALSE
+    )
+    if ("eps" %in% names(formals(clusterProfiler::gseGO))) args$eps <- 0
+    
+    do.call(clusterProfiler::gseGO, args)
   })
+  
+  output$gseaDotplot <- renderPlot({
+    req(gseaResults())
+    clusterProfiler::dotplot(gseaResults(), showCategory = 20)
+  })
+  
+  observeEvent(gseaResults(), {
+    res <- as.data.frame(gseaResults())
+    updateSelectizeInput(session, "gseaTerm",
+                         choices = res$ID,
+                         selected = head(res$ID, 1),
+                         server = TRUE)
+  })
+  
+  output$gseaEnrichPlot <- renderPlot({
+    req(gseaResults(), input$gseaTerm)
+    clusterProfiler::gseaplot2(gseaResults(), geneSetID = input$gseaTerm)
+  })
+  
+  output$gseaTable <- DT::renderDataTable({
+    req(gseaResults())
+    DT::datatable(as.data.frame(gseaResults()),
+                  extensions = "Buttons",
+                  options = list(dom = "Bfrtip", buttons = c("copy","csv")))
+  })
+  
+  output$dl_gsea <- downloadHandler(
+    filename = function() "gsea_results.csv",
+    content  = function(f) readr::write_csv(as.data.frame(gseaResults()), f)
+  )
+  
   
   # Volcano plot output
   output$volcanoPlot <- renderPlotly({
@@ -477,9 +539,8 @@ server <- function(input, output, session) {
   outputOptions(output, "pcaPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "volcanoPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "deTable", suspendWhenHidden = FALSE)
-  outputOptions(output, "geneBoxplot", suspendWhenHidden = FALSE)
-  outputOptions(output, "pathwayPlot", suspendWhenHidden = FALSE)
-  
+  outputOptions(output, "geneBoxplot", suspendWhenHidden = TRUE)
+  outputOptions(output, "gseaEnrichPlot", suspendWhenHidden = FALSE)
 }
 
 
