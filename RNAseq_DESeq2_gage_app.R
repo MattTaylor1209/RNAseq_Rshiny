@@ -9,95 +9,96 @@
 
 # Required packages
 
-biocmanager_packages <- c(
-  "limma",
-  "edgeR",
-  "Glimma",
-  "org.Dm.eg.db",
-  "org.Mm.eg.db",
-  "org.Rn.eg.db",
-  "org.Hs.eg.db",
-  "gplots",
-  "RColorBrewer",
-  "NMF",
-  "BiasedUrn",
-  "GO.db",
-  "qusage",
-  "Rsamtools",
-  "Rsubread",
-  "GenomicFeatures",
-  "Rfastp",
-  "biomaRt",
-  "DESeq2",
-  "IHW",
-  "topGO",
-  "apeglm",
-  "clusterProfiler",
-  "ashr",
-  "goseq",
-  "KEGGREST",
-  "msigdbr",
-  "GSEABase",
-  "gage",
-  "gageData",
-  "pathview",
-  "sva",
-  "RUVSeq",
-  "vsn",
-  "biomaRt"
-)
+required_packages <- c("limma",
+                       "edgeR",
+                       "Glimma",
+                       "org.Dm.eg.db",
+                       "org.Mm.eg.db",
+                       "org.Rn.eg.db",
+                       "org.Hs.eg.db",
+                       "gplots",
+                       "RColorBrewer",
+                       "NMF",
+                       "BiasedUrn",
+                       "GO.db",
+                       "qusage",
+                       "Rsamtools",
+                       "Rsubread",
+                       "GenomicFeatures",
+                       "Rfastp",
+                       "biomaRt",
+                       "DESeq2",
+                       "IHW",
+                       "topGO",
+                       "apeglm",
+                       "clusterProfiler",
+                       "ashr",
+                       "goseq",
+                       "KEGGREST",
+                       "msigdbr",
+                       "GSEABase",
+                       "gage",
+                       "gageData",
+                       "pathview",
+                       "sva",
+                       "RUVSeq",
+                       "vsn",
+                       "biomaRt",
+                       "DBI",
+                       "tidyverse",
+                       "readxl",
+                       "multcomp",
+                       "ggthemes",
+                       "ggpubr",
+                       "ggsignif",
+                       "ggrepel",
+                       "lsmeans",
+                       "rstatix",
+                       "ggtext",
+                       "RColorBrewer",
+                       "ggsci",
+                       "ggprism",
+                       "patchwork",
+                       "minpack.lm",
+                       "markdown",
+                       "treemap",
+                       "VennDiagram",
+                       "grid",
+                       "ggVennDiagram",
+                       "eulerr",
+                       "pheatmap",
+                       "plotly",
+                       "htmlwidgets",
+                       "shiny",
+                       "shinyFiles",
+                       "DT")
 
-other_packages <- c(
-  "DBI",
-  "tidyverse",
-  "readxl",
-  "multcomp",
-  "ggthemes",
-  "ggpubr",
-  "ggsignif",
-  "ggrepel",
-  "lsmeans",
-  "rstatix",
-  "ggtext",
-  "RColorBrewer",
-  "ggsci",
-  "ggprism",
-  "patchwork",
-  "minpack.lm",
-  "markdown",
-  "treemap",
-  "VennDiagram",
-  "grid",
-  "ggVennDiagram",
-  "eulerr",
-  "pheatmap",
-  "plotly",
-  "htmlwidgets",
-  "shiny",
-  "shinyFiles",
-  "DT"
-)
 
-# Install packages not yet installed
-
-if (!require("BiocManager", quietly = TRUE))
+# Install BiocManager if needed
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
   install.packages("BiocManager")
-
-installed_biocpackages <- biocmanager_packages %in% rownames(installed.packages())
-if (any(installed_biocpackages == FALSE)) {
-  BiocManager::install(biocmanager_packages[!installed_biocpackages], dependencies=TRUE)
 }
 
-installed_otherpackages <- other_packages %in% rownames(installed.packages())
-if (any(installed_otherpackages == FALSE)) {
-  install.packages(other_packages[!installed_otherpackages], dependencies=TRUE)
+# Try BiocManager first, then fallback to install.packages
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    message("Trying BiocManager::install('", pkg, "')")
+    tryCatch({
+      BiocManager::install(pkg, ask = FALSE, update = FALSE)
+    }, error = function(e_bioc) {
+      message("BiocManager failed. Trying install.packages('", pkg, "')")
+      tryCatch({
+        install.packages(pkg, dependencies = TRUE)
+      }, error = function(e_cran) {
+        message("Failed to install '", pkg, "' via both methods.")
+      })
+    })
+  }
 }
 
 # Packages loading
 
-invisible(lapply(biocmanager_packages, library, character.only = TRUE))
-invisible(lapply(other_packages, library, character.only = TRUE))
-
+invisible(lapply(required_packages, library, character.only = TRUE))
 
 
 ui <- fluidPage(
