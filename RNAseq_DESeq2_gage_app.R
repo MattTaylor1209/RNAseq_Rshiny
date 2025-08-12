@@ -123,11 +123,7 @@ ui <- fluidPage(
       uiOutput("contrastSelectUI"),
       uiOutput("flybaseCheckboxUI"),
       actionButton("analyzeBtn", "Run Analysis"),
-<<<<<<< HEAD
-      verbatimTextOutput("log"),
       downloadButton("dl_res", "Download DE table"),
-=======
->>>>>>> a9e746b (split GSEA from rest of analysis)
       tags$hr(),
       h4("GSEA"),
       selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
@@ -604,12 +600,8 @@ server <- function(input, output, session) {
   outputOptions(output, "volcanoPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "deTable", suspendWhenHidden = FALSE)
   outputOptions(output, "geneBoxplot", suspendWhenHidden = TRUE)
-<<<<<<< HEAD
-  outputOptions(output, "pathwayPlot", suspendWhenHidden = FALSE)
-  
-=======
   outputOptions(output, "gseaEnrichPlot", suspendWhenHidden = FALSE)
->>>>>>> a9e746b (split GSEA from rest of analysis)
+  
 }
 
 
