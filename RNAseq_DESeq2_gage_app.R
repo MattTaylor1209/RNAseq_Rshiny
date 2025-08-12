@@ -124,6 +124,7 @@ ui <- fluidPage(
       uiOutput("flybaseCheckboxUI"),
       actionButton("analyzeBtn", "Run Analysis"),
       verbatimTextOutput("log"),
+      downloadButton("dl_res", "Download DE table"),
       tags$hr(),
       conditionalPanel(
         condition = "output.inputsReady",
@@ -325,7 +326,7 @@ server <- function(input, output, session) {
       appendLog("Computing vst...")
       showNotification("Computing vst...", type="message")
       
-      vsd <- vst(dds)
+      vsd <- vst(dds, blind = TRUE)
       
       incProgress(0.1)
       
@@ -359,10 +360,9 @@ server <- function(input, output, session) {
       appendLog("PCA analysis...")
       showNotification("PCA analysis...", type="message")
       
-      rlogcounts <- rlog(counts)
-      # run PCA
-      pcDat <- prcomp(t(rlogcounts))
-      # Calculate variance explained
+      # PCA on vst
+      mat <- assay(vsd)
+      pcDat <- prcomp(t(mat), center = TRUE, scale. = FALSE)
       percentVar <- round(100 * (pcDat$sdev^2 / sum(pcDat$sdev^2)), 1)
       
       # Convert PCA results to a dataframe
@@ -484,9 +484,10 @@ server <- function(input, output, session) {
       text = ~paste("Gene: ", Gene, "<br>Log2FC: ", signif(log2FoldChange, 3), "<br>padj: ", signif(padj, 4)),
       color = ~significance,
       colors = volcano_colors,  # named mapping
+      key = ~Gene,
       source = "volcano",
       marker = list(size = 6)
-    ) %>%
+    ) %>% event_register('plotly_click') %>% # <-- silences the warning 
       layout(
         title = "Interactive Volcano Plot",
         xaxis = list(title = "log2 Fold Change"),
@@ -496,24 +497,23 @@ server <- function(input, output, session) {
           list(type = "line", x0 = lfc_cutoff, x1 = lfc_cutoff, y0 = 0, y1 = max(-log10(volcano_data$padj)), line = list(dash = "dash")),
           list(type = "line", y0 = -log10(padj_cutoff), y1 = -log10(padj_cutoff), x0 = min(volcano_data$log2FoldChange), x1 = max(volcano_data$log2FoldChange), line = list(dash = "dash"))
         )
-      )
+      ) 
   })
   
   
   output$geneBoxplot <- renderPlot({
     click <- event_data("plotly_click", source = "volcano")
-    req(click)
+    req(click$key)
+    clicked_gene <- click$key
     
     res <- analysisResults()$res
-    rlog_mat <- assay(rlog(analysisResults()$dds))
+    vst_mat <- assay(vst(analysisResults()$dds), blind = TRUE)
     sample_meta <- as.data.frame(colData(analysisResults()$dds))
     
-    clicked_gene <- rownames(res)[which(res$log2FoldChange == click$x & -log10(res$padj) == click$y)]
-    req(length(clicked_gene) == 1)
     
     df <- data.frame(
-      Expression = rlog_mat[clicked_gene, ],
-      Sample = colnames(rlog_mat),
+      Expression = vst_mat[clicked_gene, ],
+      Sample = colnames(vst_mat),
       Group = sample_meta$Group
     )
     
@@ -523,15 +523,21 @@ server <- function(input, output, session) {
       theme_minimal() +
       labs(
         title = paste("Expression of", clicked_gene),
-        y = "rlog-normalized expression",
+        y = "vst-normalized expression",
         x = "Group"
       )
   })
   
+  output$dl_res <- downloadHandler(
+    filename = function() "deseq2_results.csv",
+    content  = function(f) utils::write.csv(as.data.frame(analysisResults()$res),
+                                            f, row.names = TRUE)
+  )
+  
   outputOptions(output, "pcaPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "volcanoPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "deTable", suspendWhenHidden = FALSE)
-  outputOptions(output, "geneBoxplot", suspendWhenHidden = FALSE)
+  outputOptions(output, "geneBoxplot", suspendWhenHidden = TRUE)
   outputOptions(output, "pathwayPlot", suspendWhenHidden = FALSE)
   
 }
