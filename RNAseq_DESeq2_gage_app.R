@@ -37,6 +37,7 @@ required_packages <- c("limma",
                        "KEGGREST",
                        "msigdbr",
                        "GSEABase",
+                       "enrichplot",
                        "gage",
                        "gageData",
                        "pathview",
@@ -123,7 +124,10 @@ ui <- fluidPage(
       uiOutput("contrastSelectUI"),
       uiOutput("flybaseCheckboxUI"),
       actionButton("analyzeBtn", "Run Analysis"),
-      downloadButton("dl_res", "Download DE table"),
+      conditionalPanel(
+        condition = "output.analysisReady",
+        downloadButton("dl_res", "Download DE table")
+      ),
       tags$hr(),
       h4("GSEA"),
       selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
@@ -131,6 +135,7 @@ ui <- fluidPage(
       numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
       numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
       numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
+      numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
       actionButton("runGSEA", "Run GSEA"),
       conditionalPanel(
         condition = "output.inputsReady",
@@ -429,6 +434,10 @@ server <- function(input, output, session) {
   
   
   gseaResults <- eventReactive(input$runGSEA, {
+    withProgress(message = "Running GSEA analysis", value = 0, {
+      appendLog("Running GSEA analysis...")
+      showNotification("Running GSEA analysis...", type="message")
+      incProgress(0.2)
     req(analysisResults())
     ba <- analysisResults()
     
@@ -460,7 +469,7 @@ server <- function(input, output, session) {
                   "Not enough ranked genes to run GSEA."))
     
     # 3) Call gseGO; add eps=0 if your clusterProfiler supports it
-    args <- list(
+    gse <- clusterProfiler::gseGO(
       geneList     = m,
       OrgDb        = orgdb,
       keyType      = "ENTREZID",
@@ -468,29 +477,43 @@ server <- function(input, output, session) {
       minGSSize    = input$gseaMin,
       maxGSSize    = input$gseaMax,
       pvalueCutoff = input$gseaP,
-      verbose      = FALSE
+      verbose      = TRUE
     )
-    if ("eps" %in% names(formals(clusterProfiler::gseGO))) args$eps <- 0
     
-    do.call(clusterProfiler::gseGO, args)
-  })
-  
-  output$gseaDotplot <- renderPlot({
-    req(gseaResults())
-    clusterProfiler::dotplot(gseaResults(), showCategory = 20)
+    incProgress(0.8)
+    appendLog("GSEA analysis complete.")
+    showNotification("GSEA analysis complete.", type="message")
+    
+    
+    gse
+    })
   })
   
   observeEvent(gseaResults(), {
-    res <- as.data.frame(gseaResults())
-    updateSelectizeInput(session, "gseaTerm",
-                         choices = res$ID,
-                         selected = head(res$ID, 1),
-                         server = TRUE)
+    df <- as.data.frame(gseaResults())
+    updateSelectizeInput(
+      session, "gseaTerm",
+      choices  = df$ID,
+      selected = head(df$ID, 1),
+      server   = TRUE
+    )
   })
+  
+  output$gseaDotplot <- renderPlot({
+    gseres <- gseaResults()
+    validate(
+      need(!is.null(gseres), "Run GSEA first."),
+      need(inherits(gseres, c("gseaResult","enrichResult","compareClusterResult")),
+           paste("dotplot() needs a gseaResult/enrichResult. Got:", paste(class(gseres), collapse=", ")))
+    )
+    enrichplot::dotplot(gseres, showCategory = input$numcategories)  # <- enrichplot
+  })
+  
+  
   
   output$gseaEnrichPlot <- renderPlot({
     req(gseaResults(), input$gseaTerm)
-    clusterProfiler::gseaplot2(gseaResults(), geneSetID = input$gseaTerm)
+    enrichplot::gseaplot2(gseaResults(), geneSetID = input$gseaTerm, title = input$gseaTerm)
   })
   
   output$gseaTable <- DT::renderDataTable({
@@ -595,6 +618,9 @@ server <- function(input, output, session) {
     content  = function(f) utils::write.csv(as.data.frame(analysisResults()$res),
                                             f, row.names = TRUE)
   )
+  
+  output$analysisReady <- reactive({ !is.null(analysisResults()) })
+  outputOptions(output, "analysisReady", suspendWhenHidden = FALSE)
   
   outputOptions(output, "pcaPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "volcanoPlot", suspendWhenHidden = FALSE)
