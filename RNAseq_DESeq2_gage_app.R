@@ -248,7 +248,7 @@ ui <- fluidPage(
                             numericInput("gageMin", "Min geneset size", value = 10, min = 2, max = 1000, step = 1),
                             numericInput("gageMax", "Max geneset size", value = 1000, min = 2, max = 5000, step = 10),
                             selectInput("gageMetric", "Use metric",
-                                        choices = c("log2FoldChange","stat"), selected = "log2FoldChange"),
+                                        choices = c("log2FoldChange","stat"), selected = "stat"),
                             checkboxInput("gageSameDir", "Same direction (one-sided)", value = TRUE)
                      ),
                      column(8,
@@ -1009,6 +1009,10 @@ server <- function(input, output, session) {
       sig_up$Direction   <- if (nrow(sig_up))   rep("Up",   nrow(sig_up))   else character(0)
       sig_down$Direction <- if (nrow(sig_down)) rep("Down", nrow(sig_down)) else character(0)
       
+      # human-readable pathway name at the end of the row
+      sig_up$Description   <- if (!is.null(rn_up))   trimws(sub("^\\S+\\s*", "", rn_up))   else character(0)
+      sig_down$Description <- if (!is.null(rn_down)) trimws(sub("^\\S+\\s*", "", rn_down)) else character(0)
+      
       # Order for display
       if ("q.val" %in% names(sig_up))   sig_up   <- sig_up[order(sig_up$q.val),   , drop = FALSE]
       if ("q.val" %in% names(sig_down)) sig_down <- sig_down[order(sig_down$q.val), , drop = FALSE]
@@ -1028,18 +1032,45 @@ server <- function(input, output, session) {
   
   # ---- Tables ----
   output$gageUpTable <- DT::renderDataTable({
-    df <- req(gageRes())$up
+    gr <- req(gageRes()); df <- gr$up
     if (!NROW(df)) return(DT::datatable(data.frame(Message = "No significant upregulated pathways."),
                                         options = list(dom = 't'), rownames = FALSE))
-    if (!"Pathway" %in% names(df)) df$Pathway <- df$PathwayID
+    df <- as.data.frame(df, stringsAsFactors = FALSE)
+    rownames(df) <- NULL
+    # ensure PathwayID present (you already add it upstream)
+    if (!"PathwayID" %in% names(df)) {
+      rn <- gr$up |> rownames()
+      df$PathwayID <- if (!is.null(rn)) substr(rn, 1, 8) else ""
+    }
+    # ensure Description present (you added upstream)
+    if (!"Description" %in% names(df)) {
+      rn <- gr$up |> rownames()
+      df$Description <- if (!is.null(rn)) trimws(sub("^\\S+\\s*", "", rn)) else ""
+    }
+    # (Optional) keep Description as the last column
+    last_cols <- c(setdiff(names(df), "Description"), "Description")
+    df <- df[, last_cols, drop = FALSE]
+    
     DT::datatable(df, options = list(pageLength = 10), selection = "single", rownames = FALSE)
   })
   
   output$gageDownTable <- DT::renderDataTable({
-    df <- req(gageRes())$down
+    gr <- req(gageRes()); df <- gr$down
     if (!NROW(df)) return(DT::datatable(data.frame(Message = "No significant downregulated pathways."),
                                         options = list(dom = 't'), rownames = FALSE))
-    if (!"Pathway" %in% names(df)) df$Pathway <- df$PathwayID
+    df <- as.data.frame(df, stringsAsFactors = FALSE)
+    rownames(df) <- NULL
+    if (!"PathwayID" %in% names(df)) {
+      rn <- gr$down |> rownames()
+      df$PathwayID <- if (!is.null(rn)) substr(rn, 1, 8) else ""
+    }
+    if (!"Description" %in% names(df)) {
+      rn <- gr$down |> rownames()
+      df$Description <- if (!is.null(rn)) trimws(sub("^\\S+\\s*", "", rn)) else ""
+    }
+    last_cols <- c(setdiff(names(df), "Description"), "Description")
+    df <- df[, last_cols, drop = FALSE]
+    
     DT::datatable(df, options = list(pageLength = 10), selection = "single", rownames = FALSE)
   })
   
