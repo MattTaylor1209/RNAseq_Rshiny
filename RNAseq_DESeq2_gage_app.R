@@ -102,6 +102,10 @@ for (pkg in required_packages) {
 
 invisible(lapply(required_packages, library, character.only = TRUE))
 
+# Increase upload size 
+
+options(shiny.maxRequestSize = 50 * 1024^2)  # 50 MB
+
 
 ui <- fluidPage(
   titlePanel("RNA-seq Analysis from featureCounts (.rds)"),
