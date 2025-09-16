@@ -486,6 +486,14 @@ server <- function(input, output, session) {
                        isolate(input$padjThreshold), 
                      contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator)))
       
+      # Match your UI thresholds in the summary
+      sum_txt <- paste(
+        capture.output(summary(res, alpha = isolate(input$padjThreshold))),
+        collapse = "\n"
+      )
+      appendLog("DESeq2 results summary:")
+      appendLog(sum_txt)  
+      
       incProgress(0.1)
       
       appendLog("Computing vst...")
