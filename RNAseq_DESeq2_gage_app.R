@@ -124,11 +124,15 @@ ui <- fluidPage(
                   selected = "org.Rn.eg.db"
       ),
       numericInput("lfcThreshold", "log2 Fold Change threshold", value = 1, min = 0),
-      numericInput("padjThreshold", "Adjusted p-value threshold", value = 0.05, min = 0, max = 1),
+      numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.1, min = 0, max = 1),
       uiOutput("groupOrderUI"),
       uiOutput("contrastSelectUI"),
       uiOutput("flybaseCheckboxUI"),
       actionButton("analyzeBtn", "Run Analysis"),
+      conditionalPanel(
+        condition = "output.inputsReady",
+        checkboxInput("viewPreview", "Preview input files", value = TRUE)
+      ),
       conditionalPanel(
         condition = "output.analysisReady",
         downloadButton("dl_res", "Download DE table")
@@ -142,10 +146,9 @@ ui <- fluidPage(
       numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
       numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
       actionButton("runGSEA", "Run GSEA"),
-      conditionalPanel(
-        condition = "output.inputsReady",
-        checkboxInput("viewPreview", "Preview input files", value = TRUE)
-      )
+      tags$hr(),
+      h4("GO"),
+      actionButton("runGO", "Run GO")
     ),
     
     mainPanel(
@@ -243,6 +246,11 @@ ui <- fluidPage(
                    plotOutput("gseaEnrichPlot"),
                    DT::dataTableOutput("gseaTable"),
                    downloadButton("dl_gsea", "Download GSEA table")
+          ),
+          tabPanel("GO",
+                   selectInput("GOontology", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                   numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1),
+                   plotOutput("GOBarplot")
           ),
           tabPanel("GAGE (KEGG)",
                    fluidRow(
@@ -423,6 +431,23 @@ server <- function(input, output, session) {
       orgdb_name <- isolate(input$organism)
       orgdb <- isolate(get(orgdb_name))
       
+      fc <- counts_data()
+      
+      # Add an ENTREZID column to counts_data for later, with special handling for Drosophila
+      
+      symbol_to_entrez <- bitr(fc$annotation$GeneID, 
+                               fromType = ifelse(orgdb_name == "org.Dm.eg.db", "FLYBASE", "SYMBOL"), 
+                               toType = "ENTREZID", 
+                               OrgDb = orgdb) 
+      
+      # Merge the ENTREZ IDs with the original data
+      fc$annotation <- merge(fc$annotation, 
+                                  symbol_to_entrez, 
+                                  by.x = "GeneID", 
+                                  by.y = "SYMBOL", 
+                                  all.x = TRUE)
+      
+      # Extracting just the counts matrix for DESeq2
       counts <- counts_data()$counts
       colnames(counts) <- sample_info()$SampleName
       
@@ -505,10 +530,10 @@ server <- function(input, output, session) {
       
       # Create res object with rownames being ENTREZIDs
       
-      # Step 1: Get gene symbols from DESeq2 results (res)
+      # Get gene symbols from DESeq2 results (res)
       uni_gene_symbols <- rownames(res)  # Get gene symbols from DESeq2 results
       
-      # Step 2: Map gene symbols to Entrez IDs using bitr
+      # Map gene symbols to Entrez IDs using bitr
       
       from_type <- if (orgdb_name == "org.Dm.eg.db") {
         if (isTRUE(isolate(input$convertFlybase))) {
@@ -523,12 +548,23 @@ server <- function(input, output, session) {
       
       uni_entrez_ids <- bitr(uni_gene_symbols, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
       
-      # Step 3: Merge the DESeq2 results (res) with the Entrez IDs 
+      # Merge the DESeq2 results (res) with the Entrez IDs 
       res_entrez <- merge(as.data.frame(res), uni_entrez_ids, by.x = "row.names", by.y = from_type)
       
-      # Step 4: rename the first column to "GeneIDs"
+      # rename the first column to "GeneIDs"
       res_entrez <- res_entrez %>% rename(GeneIDs = Row.names)
       
+      # Add gene length information
+      
+      m <- match(res_entrez$ENTREZID, fc$annotation$ENTREZID)
+      gene_lengths <- as.numeric(fc$annotation$Length[m])
+      
+      # Step 2: Create a named vector of gene lengths, where the names are the ENTREZ IDs
+      names(gene_lengths) <- res_entrez$ENTREZID
+      
+      
+      # Step 3: Add the gene_length column back to your 'res_entrez' data frame if needed
+      res_entrez <- cbind(res_entrez, gene_lengths)
       
       appendLog("PCA analysis...")
       showNotification("PCA analysis...", type="message")
@@ -696,6 +732,9 @@ server <- function(input, output, session) {
     )
   }, res = 96)
   
+  
+  ###---GSEA---###
+  
   gseaResults <- eventReactive(input$runGSEA, {
     withProgress(message = "Running GSEA analysis", value = 0, {
       appendLog("Running GSEA analysis...")
@@ -791,8 +830,77 @@ server <- function(input, output, session) {
     content  = function(f) readr::write_csv(as.data.frame(gseaResults()), f)
   )
   
+  ###---GO---###
   
-  # Interactive volcano plot output
+  goSpeciesCode <- reactive({
+    org <- isolate(input$organism)
+    if (org == "org.Hs.eg.db") return("Hs")
+    if (org == "org.Mm.eg.db") return("Mm")
+    if (org == "org.Rn.eg.db") return("Rn")
+    if (org == "org.Dm.eg.db") return("Dm")
+    "hsa"
+  })
+  
+  goResults <- eventReactive(input$runGO, {
+    withProgress(message = "Running GO analysis", value = 0, {
+      appendLog("Running GO analysis...")
+      showNotification("Running GO analysis...", type="message")
+      incProgress(0.2)
+      req(analysisResults())
+      ba <- analysisResults()
+      
+      orgdb_name <- isolate(input$organism)
+      orgdb <- isolate(get(orgdb_name))
+
+      # First, ensure we have a clean data frame with no length mismatches
+      res_clean <- ba$res_entrez[complete.cases(ba$res_entrez[c("padj", "log2FoldChange", "ENTREZID")]), ]
+      
+      # Now apply your filters on the cleaned data
+      sig_genes <- res_clean[which(res_clean$padj < isolate(input$padjThreshold) &
+                                     abs(res_clean$log2FoldChange) >= isolate(input$lfcThreshold)), ]
+      
+      # Extract vectors
+      entrez_id_vector <- sig_genes$ENTREZID
+      universe_entrez_ids <- res_clean$ENTREZID
+      
+      # Fix gene lengths
+      gene_lengths <- as.numeric(res_clean$gene_lengths)
+      names(gene_lengths) <- res_clean$ENTREZID
+      
+      # Read species code 
+      sp <- isolate(goSpeciesCode())
+      
+      # Run GO enrichment analysis with goana
+      go_results <- goana(de = entrez_id_vector, species = sp, 
+                          universe = universe_entrez_ids, 
+                          covariate = gene_lengths)
+      
+      incProgress(0.8)
+      appendLog("GO analysis complete.")
+      showNotification("GO analysis complete.", type="message")
+      
+      list(go_results = go_results)
+    })
+  })
+  
+  output$GOBarplot <- renderPlot({
+    req(goResults(), input$GOontology)
+    
+    go_results <- goResults()$go_results
+    topgo <- topGO(go_results, ontology = input$GOontology, number = 
+                     input$GOnumber)
+    
+    ggplot(data = topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
+      geom_bar(stat = "identity") +
+      coord_flip() +
+      theme_minimal() +
+      labs(x = "GO Terms", y = "-log10(p-value)", title = paste("Top GO Terms", 
+                                                                isolate(input$GOontology), sep = ": ")
+           )
+  })
+  
+  ###---Interactive volcano plot output---###
+  
   output$volcanoPlot <- renderPlotly({
     req(analysisResults())
     
@@ -1190,6 +1298,7 @@ server <- function(input, output, session) {
   outputOptions(output, "volcanoPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "deTable", suspendWhenHidden = FALSE)
   outputOptions(output, "geneBoxplot", suspendWhenHidden = TRUE)
+  outputOptions(output, "GOBarplot", suspendWhenHidden = FALSE)
   outputOptions(output, "gseaEnrichPlot", suspendWhenHidden = FALSE)
   
 }
