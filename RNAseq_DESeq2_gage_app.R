@@ -433,24 +433,33 @@ server <- function(input, output, session) {
       
       fc <- counts_data()
       
-      # Add an ENTREZID column to counts_data for later, with special handling for Drosophila
+      # Decide what your GeneID column represents
+      from_type <- if (orgdb_name == "org.Dm.eg.db" && isTRUE(input$convertFlybase)) {
+        "FLYBASE"
+      } else {
+        "SYMBOL"
+      }
       
-      symbol_to_entrez <- bitr(fc$annotation$GeneID, 
-                               fromType = ifelse(orgdb_name == "org.Dm.eg.db", "FLYBASE", "SYMBOL"), 
-                               toType = "ENTREZID", 
-                               OrgDb = orgdb) 
+      # Map -> ENTREZ, keep it clean and 1:1 on the input id
+      symbol_to_entrez <- clusterProfiler::bitr(
+        fc$annotation$GeneID,
+        fromType = from_type,
+        toType   = "ENTREZID",
+        OrgDb    = orgdb
+      ) |>
+        dplyr::filter(!is.na(ENTREZID)) |>
+        dplyr::distinct(.data[[from_type]], .keep_all = TRUE)
       
-      # Merge the ENTREZ IDs with the original data
-      fc$annotation <- merge(fc$annotation, 
-                                  symbol_to_entrez, 
-                                  by.x = "GeneID", 
-                                  by.y = "SYMBOL", 
-                                  all.x = TRUE)
+      # Join using the correct key name for the mapping table
+      fc$annotation <- dplyr::left_join(
+        fc$annotation,
+        symbol_to_entrez,
+        by = c("GeneID" = from_type)
+      )
       
-      # Extracting just the counts matrix for DESeq2
+      # Proceed
       counts <- counts_data()$counts
       colnames(counts) <- sample_info()$SampleName
-      
       col_data <- sample_info()
       
       # set group levels
