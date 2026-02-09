@@ -9,98 +9,71 @@
 
 # Required packages
 
-required_packages <- c("limma",
-                       "edgeR",
-                       "Glimma",
-                       "org.Dm.eg.db",
-                       "org.Mm.eg.db",
-                       "org.Rn.eg.db",
-                       "org.Hs.eg.db",
-                       "gplots",
-                       "RColorBrewer",
-                       "NMF",
-                       "BiasedUrn",
-                       "GO.db",
-                       "qusage",
-                       "Rsamtools",
-                       "Rsubread",
-                       "GenomicFeatures",
-                       "Rfastp",
-                       "biomaRt",
-                       "DESeq2",
-                       "IHW",
-                       "topGO",
-                       "apeglm",
-                       "clusterProfiler",
-                       "ashr",
-                       "goseq",
-                       "KEGGREST",
-                       "msigdbr",
-                       "GSEABase",
-                       "enrichplot",
-                       "gage",
-                       "gageData",
-                       "pathview",
-                       "sva",
-                       "RUVSeq",
-                       "vsn",
-                       "biomaRt",
-                       "DBI",
-                       "tidyverse",
-                       "readxl",
-                       "multcomp",
-                       "ggthemes",
-                       "ggpubr",
-                       "ggsignif",
-                       "ggrepel",
-                       "lsmeans",
-                       "rstatix",
-                       "ggtext",
-                       "RColorBrewer",
-                       "ggsci",
-                       "ggprism",
-                       "patchwork",
-                       "minpack.lm",
-                       "markdown",
-                       "treemap",
-                       "VennDiagram",
-                       "grid",
-                       "ggVennDiagram",
-                       "eulerr",
-                       "pheatmap",
-                       "plotly",
-                       "htmlwidgets",
-                       "shiny",
-                       "shinyFiles",
-                       "DT",
-                       "tidyr")
+library(limma)
+library(edgeR)
+library(Glimma)
+library(org.Dm.eg.db)
+library(org.Mm.eg.db)
+library(org.Rn.eg.db)
+library(org.Hs.eg.db)
+library(gplots)
+library(RColorBrewer)
+library(NMF)
+library(BiasedUrn)
+library(GO.db)
+library(qusage)
+library(Rsamtools)
+library(Rsubread)
+library(GenomicFeatures)
+library(Rfastp)
+library(biomaRt)
+library(DESeq2)
+library(IHW)
+library(topGO)
+library(apeglm)
+library(clusterProfiler)
+library(ashr)
+library(goseq)
+library(KEGGREST)
+library(msigdbr)
+library(GSEABase)
+library(enrichplot)
+library(gage)
+library(gageData)
+library(pathview)
+library(sva)
+library(RUVSeq)
+library(vsn)
+library(DBI)
+library(tidyverse)
+library(readxl)
+library(multcomp)
+library(ggthemes)
+library(ggpubr)
+library(ggsignif)
+library(ggrepel)
+library(lsmeans)
+library(rstatix)
+library(ggtext)
+library(ggsci)
+library(ggprism)
+library(patchwork)
+library(minpack.lm)
+library(markdown)
+library(treemap)
+library(VennDiagram)
+library(grid)
+library(ggVennDiagram)
+library(eulerr)
+library(pheatmap)
+library(plotly)
+library(htmlwidgets)
+library(shiny)
+library(shinyFiles)
+library(DT)
+library(tidyr)
 
 
-# Install BiocManager if needed
-if (!requireNamespace("BiocManager", quietly = TRUE)) {
-  install.packages("BiocManager")
-}
-
-# Try BiocManager first, then fallback to install.packages
-for (pkg in required_packages) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    message("Trying BiocManager::install('", pkg, "')")
-    tryCatch({
-      BiocManager::install(pkg, ask = FALSE, update = FALSE)
-    }, error = function(e_bioc) {
-      message("BiocManager failed. Trying install.packages('", pkg, "')")
-      tryCatch({
-        install.packages(pkg, dependencies = TRUE)
-      }, error = function(e_cran) {
-        message("Failed to install '", pkg, "' via both methods.")
-      })
-    })
-  }
-}
-
-# Packages loading
-
-invisible(lapply(required_packages, library, character.only = TRUE))
 
 # Increase upload size 
 
