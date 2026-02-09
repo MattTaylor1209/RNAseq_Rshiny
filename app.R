@@ -476,7 +476,7 @@ server <- function(input, output, session) {
       # filter our low counts
       appendLog("Filtering low-expression genes...")
       showNotification("Filtering low-expression genes...", type="message")
-      keep <- filterByExpr(counts(dds), group = dds$Group)
+      keep <- edgeR::filterByExpr(counts(dds), group = dds$Group)
       
       dds <- dds[keep,]
       incProgress(0.1)
@@ -528,7 +528,12 @@ server <- function(input, output, session) {
       }
       
       
-      uni_entrez_ids <- bitr(uni_gene_symbols, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
+      uni_entrez_ids <- clusterProfiler::bitr(
+        uni_gene_symbols,
+        fromType = from_type,
+        toType   = "ENTREZID",
+        OrgDb    = orgdb
+      )
       
       # Merge the DESeq2 results (res) with the Entrez IDs 
       res_entrez <- merge(as.data.frame(res), uni_entrez_ids, by.x = "row.names", by.y = from_type)
@@ -672,7 +677,8 @@ server <- function(input, output, session) {
         viridisLite::plasma(100)
       }
     } else {
-      colors <- colorRampPalette(rev(brewer.pal(11, input$heatmapColorScheme)))(100)
+      colors <- colorRampPalette(rev(RColorBrewer::brewer.pal(11, input$heatmapColorScheme)))(100)
+      
     }
     
     # Create annotation colors - handle cases with <3 groups
@@ -691,7 +697,7 @@ server <- function(input, output, session) {
                   "Need at least 2 genes and 2 samples to draw the heatmap."))
     
     # Generate heatmap
-    pheatmap(
+    pheatmap::pheatmap(
       heatmap_mat,
       scale = input$heatmapScale,
       clustering_distance_rows = "correlation",
@@ -853,7 +859,7 @@ server <- function(input, output, session) {
       sp <- isolate(goSpeciesCode())
       
       # Run GO enrichment analysis with goana
-      go_results <- goana(de = entrez_id_vector, species = sp, 
+      go_results <- limma::goana(de = entrez_id_vector, species = sp, 
                           universe = universe_entrez_ids, 
                           covariate = gene_lengths)
       
@@ -869,8 +875,11 @@ server <- function(input, output, session) {
     req(goResults(), input$GOontology)
     
     go_results <- goResults()$go_results
-    topgo <- topGO(go_results, ontology = input$GOontology, number = 
-                     input$GOnumber)
+    topgo <- limma::topGO(
+      go_results,
+      ontology = input$GOontology,
+      number   = input$GOnumber
+    )
     
     ggplot(data = topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
       geom_bar(stat = "identity") +
@@ -913,7 +922,7 @@ server <- function(input, output, session) {
     volcano_data <- res_df
     volcano_data$Gene <- rownames(volcano_data)
     
-    plot_ly(
+    p <- plotly::plot_ly(
       data = volcano_data,
       x = ~log2FoldChange,
       y = ~log10padj,
@@ -921,26 +930,33 @@ server <- function(input, output, session) {
       mode = "markers",
       text = ~paste("Gene: ", Gene, "<br>Log2FC: ", signif(log2FoldChange, 3), "<br>padj: ", signif(padj, 4)),
       color = ~significance,
-      colors = volcano_colors,  # named mapping
+      colors = volcano_colors,
       key = ~Gene,
       source = "volcano",
       marker = list(size = 6)
-    ) %>% event_register('plotly_click') %>% # <-- silences the warning 
-      layout(
-        title = "Interactive Volcano Plot",
-        xaxis = list(title = "log2 Fold Change"),
-        yaxis = list(title = "-log10 Adjusted p-value"),
-        shapes = list(
-          list(type = "line", x0 = -lfc_cutoff, x1 = -lfc_cutoff, y0 = 0, y1 = max(-log10(volcano_data$padj)), line = list(dash = "dash")),
-          list(type = "line", x0 = lfc_cutoff, x1 = lfc_cutoff, y0 = 0, y1 = max(-log10(volcano_data$padj)), line = list(dash = "dash")),
-          list(type = "line", y0 = -log10(padj_cutoff), y1 = -log10(padj_cutoff), x0 = min(volcano_data$log2FoldChange), x1 = max(volcano_data$log2FoldChange), line = list(dash = "dash"))
-        )
-      ) 
+    )
+    
+    p <- plotly::event_register(p, "plotly_click")
+    
+    plotly::layout(
+      p,
+      title = "Interactive Volcano Plot",
+      xaxis = list(title = "log2 Fold Change"),
+      yaxis = list(title = "-log10 Adjusted p-value"),
+      shapes = list(
+        list(type = "line", x0 = -lfc_cutoff, x1 = -lfc_cutoff, y0 = 0, y1 = max(-log10(volcano_data$padj)), line = list(dash = "dash")),
+        list(type = "line", x0 =  lfc_cutoff, x1 =  lfc_cutoff, y0 = 0, y1 = max(-log10(volcano_data$padj)), line = list(dash = "dash")),
+        list(type = "line", y0 = -log10(padj_cutoff), y1 = -log10(padj_cutoff),
+             x0 = min(volcano_data$log2FoldChange), x1 = max(volcano_data$log2FoldChange), line = list(dash = "dash"))
+      )
+    )
+    
   })
   
   
   output$geneBoxplot <- renderPlot({
-    click <- event_data("plotly_click", source = "volcano")
+    click <- plotly::event_data("plotly_click", source = "volcano")
+    
     req(click$key)
     clicked_gene <- click$key
     
