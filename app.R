@@ -94,10 +94,10 @@ ui <- fluidPage(
                     "Human (Homo sapiens)" = "org.Hs.eg.db",
                     "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db"
                   ),
-                  selected = "org.Rn.eg.db"
+                  selected = "org.Dm.eg.db"
       ),
-      numericInput("lfcThreshold", "log2 Fold Change threshold", value = 1, min = 0),
-      numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.1, min = 0, max = 1),
+      numericInput("lfcThreshold", "log2 Fold Change threshold", value = 0.5, min = 0),
+      numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
       uiOutput("groupOrderUI"),
       uiOutput("contrastSelectUI"),
       uiOutput("flybaseCheckboxUI"),
@@ -307,8 +307,8 @@ ui <- fluidPage(
                             h5("Add a contrast to compare"),
                             uiOutput("cmpNumeratorUI"),
                             uiOutput("cmpDenominatorUI"),
-                            numericInput("cmpLFC", "LFC threshold", value = 1, min = 0),
-                            numericInput("cmpPadj", "Adj. p-value threshold", value = 0.1, min = 0, max = 1, step = 0.01),
+                            numericInput("cmpLFC", "LFC threshold", value = 0.5, min = 0),
+                            numericInput("cmpPadj", "Adj. p-value threshold", value = 0.05, min = 0, max = 1, step = 0.01),
                             actionButton("addContrastBtn", "Add Contrast", icon = icon("plus")),
                             br(), br(),
                             actionButton("clearContrastsBtn", "Clear All Contrasts", icon = icon("trash"))
