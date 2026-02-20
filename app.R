@@ -329,7 +329,7 @@ ui <- fluidPage(
                             selectInput("vennType", "Diagram type", 
                                         choices = c("Venn (ggVennDiagram)" = "venn",
                                                     "Euler (eulerr)" = "euler"),
-                                        selected = "euler"),
+                                        selected = "venn"),
                             selectInput("vennDEGdirection", "DEG direction",
                                         choices = c("Both (|LFC| threshold)" = "both",
                                                     "Upregulated only" = "up",
@@ -340,7 +340,7 @@ ui <- fluidPage(
                             downloadButton("dl_venn", "Download PNG")
                      ),
                      column(9,
-                            plotOutput("vennPlot", height = "450px")
+                            plotOutput("vennPlot")
                      )
                    ),
                    hr(),
@@ -368,6 +368,7 @@ ui <- fluidPage(
                    fluidRow(
                      column(3,
                             uiOutput("vennVolcContrastUI"),
+                            uiOutput("vennVolcContextUI"),
                             sliderInput("cmpVolcTop", "Top genes to label", 1, 80, 20, step = 1),
                             sliderInput("cmpVolcPtSz", "Point size", 0.5, 6, 2, step = 0.5),
                             actionButton("runCmpVolcBtn", "Draw Volcano", icon = icon("chart-line"))
@@ -424,14 +425,14 @@ ui <- fluidPage(
                                         ),
                                         tabPanel("GAGE / Pathview",
                                                  fluidRow(
-                                                   column(6,
+                                                   
                                                           h5("Upregulated pathways"),
                                                           DT::dataTableOutput("cmpGageUpTable")
-                                                   ),
-                                                   column(6,
+                                                 ),
+                                                 fluidRow(
                                                           h5("Downregulated pathways"),
                                                           DT::dataTableOutput("cmpGageDownTable")
-                                                   )
+                                                   
                                                  ),
                                                  hr(),
                                                  fluidRow(
@@ -1595,8 +1596,12 @@ server <- function(input, output, session) {
     if (input$vennType == "venn") {
       ggVennDiagram::ggVennDiagram(gs, label_alpha = 0) +
         scale_fill_gradient(low = "#DDF093", high = "#638475") +
+        coord_equal(clip = "off") +
         theme_void() +
-        theme(legend.position = "none")
+        theme(
+          legend.position = "none",
+          plot.margin = margin(t = 30, r = 80, b = 30, l = 180, unit = "pt")  # <- more padding
+        )
     } else {
       fit <- eulerr::euler(gs)
       plot(fit,
@@ -1860,6 +1865,30 @@ server <- function(input, output, session) {
                 choices = names(vennSets()$genesets))
   })
   
+  # Context selector: which gene set scope to use for shared/unique classification
+  output$vennVolcContextUI <- renderUI({
+    req(vennSets())
+    gs  <- vennSets()$genesets
+    nms <- names(gs)
+    
+    choices <- c("All contrasts (any sharing counts)" = "ALL_OTHER")
+    for (nm in nms) choices[paste0("Unique vs: ", nm, " only")] <- paste0("PAIR__", nm)
+    if (length(nms) > 1) {
+      pairs <- combn(nms, 2, simplify = FALSE)
+      for (p in pairs) {
+        lbl <- paste0("Shared between: ", paste(p, collapse = " & "))
+        choices[lbl] <- paste0("CTX_PAIR__", paste(p, collapse = "|||"))
+      }
+    }
+    choices["Shared across ALL contrasts"] <- "CTX_ALL_SHARED"
+    
+    tagList(
+      selectInput("vennVolcContext", "Classify shared/unique relative to:",
+                  choices = choices, selected = "ALL_OTHER"),
+      helpText("Match this to your 'Select gene set' choice above for consistency.")
+    )
+  })
+  
   observeEvent(input$runCmpVolcBtn, {
     req(vennSets(), analysisResults())
     output$cmpVolcanoPlot <- renderPlot({
@@ -1876,34 +1905,78 @@ server <- function(input, output, session) {
       )
       spec <- Filter(function(x) x$label == focal, all_contrasts)[[1]]
       
-      res_c <- as.data.frame(results(dds, contrast = c("Group", spec$numerator, spec$denominator)))
+      res_c <- as.data.frame(results(dds,
+                                     lfcThreshold = spec$lfc,
+                                     altHypothesis = "greaterAbs",
+                                     alpha = spec$padj,
+                                     contrast = c("Group", spec$numerator, spec$denominator)))
       res_c <- res_c[!is.na(res_c$padj) & !is.na(res_c$log2FoldChange), ]
       res_c$GeneID <- rownames(res_c)
       
-      # Determine shared vs unique membership with concordance for shared genes
-      shared_genes <- if (length(gs) > 1) Reduce(intersect, gs) else gs[[1]]
-      unique_genes <- setdiff(gs[[focal]], shared_genes)
+      # Determine shared vs unique membership with concordance for shared genes.
+      # The context (input$vennVolcContext) controls which contrasts count as "other":
+      #   ALL_OTHER      -> any other contrast that has the gene counts as sharing
+      #   CTX_PAIR__A|||B -> only contrasts A and B count (pairwise scope)
+      #   CTX_ALL_SHARED  -> only genes in ALL contrasts are "shared"; rest are unique
+      #   PAIR__X         -> focal is compared only against X (gene unique if absent from X)
       
       vs_local      <- vennSets()
       sig_dfs_local <- vs_local$sig_dfs
-      other_nms     <- setdiff(names(gs), focal)
+      ctx           <- if (!is.null(input$vennVolcContext)) input$vennVolcContext else "ALL_OTHER"
       
-      concordant_up <- concordant_down <- discordant <- character(0)
+      # Determine which other contrasts to check against, based on context
+      all_other_nms <- setdiff(names(gs), focal)
       
-      for (g in shared_genes) {
+      context_nms <- if (ctx == "ALL_OTHER") {
+        all_other_nms
+      } else if (ctx == "CTX_ALL_SHARED") {
+        all_other_nms   # shared = in every other contrast; handled below
+      } else if (startsWith(ctx, "CTX_PAIR__")) {
+        pair_members <- strsplit(sub("^CTX_PAIR__", "", ctx), "\\|\\|\\|")[[1]]
+        setdiff(pair_members, focal)   # only the other member(s) of this pair
+      } else if (startsWith(ctx, "PAIR__")) {
+        # "Unique vs X only" - compare focal against just X
+        nm_x <- sub("^PAIR__", "", ctx)
+        if (nm_x == focal) all_other_nms else c(nm_x)
+      } else {
+        all_other_nms
+      }
+      
+      focal_genes <- gs[[focal]]
+      concordant_up <- concordant_down <- discordant <- unique_genes <- character(0)
+      
+      for (g in focal_genes) {
         focal_lfc <- res_c$log2FoldChange[res_c$GeneID == g]
         if (length(focal_lfc) == 0 || is.na(focal_lfc)) next
         focal_dir <- sign(focal_lfc)
-        other_dirs <- sapply(other_nms, function(nm) {
+        
+        # Check presence/direction in the context contrasts only
+        other_dirs <- sapply(context_nms, function(nm) {
           v <- sig_dfs_local[[nm]]$log2FoldChange[rownames(sig_dfs_local[[nm]]) == g]
           if (length(v) == 0) return(NA_real_) else sign(v[1])
         })
-        other_dirs <- other_dirs[!is.na(other_dirs)]
-        if (length(other_dirs) == 0 || all(other_dirs == focal_dir)) {
-          if (focal_dir > 0) concordant_up   <- c(concordant_up,   g)
-          else               concordant_down <- c(concordant_down, g)
+        
+        if (ctx == "CTX_ALL_SHARED") {
+          # "Shared" only if present in ALL context contrasts
+          if (any(is.na(other_dirs))) {
+            unique_genes <- c(unique_genes, g)
+          } else if (all(other_dirs == focal_dir)) {
+            if (focal_dir > 0) concordant_up   <- c(concordant_up,   g)
+            else               concordant_down <- c(concordant_down, g)
+          } else {
+            discordant <- c(discordant, g)
+          }
         } else {
-          discordant <- c(discordant, g)
+          # "Shared" if present in at least one context contrast
+          other_dirs_present <- other_dirs[!is.na(other_dirs)]
+          if (length(other_dirs_present) == 0) {
+            unique_genes <- c(unique_genes, g)
+          } else if (all(other_dirs_present == focal_dir)) {
+            if (focal_dir > 0) concordant_up   <- c(concordant_up,   g)
+            else               concordant_down <- c(concordant_down, g)
+          } else {
+            discordant <- c(discordant, g)
+          }
         }
       }
       
