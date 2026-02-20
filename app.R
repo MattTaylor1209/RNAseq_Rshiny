@@ -288,7 +288,167 @@ ui <- fluidPage(
                    
           ),
           tabPanel("Interactive Volcano Plot", plotlyOutput("volcanoPlot"),
-                   plotOutput("geneBoxplot"))
+                   plotOutput("geneBoxplot")),
+          
+          # ---- Compare Contrasts Tab ----
+          tabPanel("Compare Contrasts",
+                   fluidRow(
+                     column(12,
+                            h4("Compare DEGs Across Multiple Contrasts"),
+                            p("Run additional contrasts from the same DESeq2 dataset and compare their DEGs via Venn/Euler diagrams, 
+                   volcano plots, and downstream analyses (GO, GSEA, GAGE/pathview) on shared or unique gene sets.")
+                     )
+                   ),
+                   hr(),
+                   
+                   # --- Contrast builder ---
+                   fluidRow(
+                     column(3,
+                            h5("Add a contrast to compare"),
+                            uiOutput("cmpNumeratorUI"),
+                            uiOutput("cmpDenominatorUI"),
+                            numericInput("cmpLFC", "LFC threshold", value = 1, min = 0),
+                            numericInput("cmpPadj", "Adj. p-value threshold", value = 0.1, min = 0, max = 1, step = 0.01),
+                            actionButton("addContrastBtn", "Add Contrast", icon = icon("plus")),
+                            br(), br(),
+                            actionButton("clearContrastsBtn", "Clear All Contrasts", icon = icon("trash"))
+                     ),
+                     column(9,
+                            h5("Contrasts queued (including primary contrast from sidebar):"),
+                            tableOutput("contrastListTable")
+                     )
+                   ),
+                   hr(),
+                   
+                   # --- Venn / Euler ---
+                   fluidRow(
+                     column(12, h4("Venn / Euler Diagram"))
+                   ),
+                   fluidRow(
+                     column(3,
+                            selectInput("vennType", "Diagram type", 
+                                        choices = c("Venn (ggVennDiagram)" = "venn",
+                                                    "Euler (eulerr)" = "euler"),
+                                        selected = "euler"),
+                            selectInput("vennDEGdirection", "DEG direction",
+                                        choices = c("Both (|LFC| threshold)" = "both",
+                                                    "Upregulated only" = "up",
+                                                    "Downregulated only" = "down"),
+                                        selected = "both"),
+                            actionButton("runVennBtn", "Draw Diagram", icon = icon("circle")),
+                            br(), br(),
+                            downloadButton("dl_venn", "Download PNG")
+                     ),
+                     column(9,
+                            plotOutput("vennPlot", height = "450px")
+                     )
+                   ),
+                   hr(),
+                   
+                   # --- Gene tables from Venn regions ---
+                   fluidRow(
+                     column(12, h4("Explore Gene Sets from Diagram"))
+                   ),
+                   fluidRow(
+                     column(4,
+                            uiOutput("vennSetSelectorUI"),
+                            actionButton("loadVennGenesBtn", "Load genes for this set", icon = icon("table"))
+                     ),
+                     column(8,
+                            DT::dataTableOutput("vennGenesTable"),
+                            downloadButton("dl_venn_genes", "Download gene list")
+                     )
+                   ),
+                   hr(),
+                   
+                   # --- Volcano plots coloured by Venn membership ---
+                   fluidRow(
+                     column(12, h4("Volcano Plots Coloured by Overlap"))
+                   ),
+                   fluidRow(
+                     column(3,
+                            uiOutput("vennVolcContrastUI"),
+                            sliderInput("cmpVolcTop", "Top genes to label", 1, 80, 20, step = 1),
+                            sliderInput("cmpVolcPtSz", "Point size", 0.5, 6, 2, step = 0.5),
+                            actionButton("runCmpVolcBtn", "Draw Volcano", icon = icon("chart-line"))
+                     ),
+                     column(9,
+                            plotOutput("cmpVolcanoPlot", height = "450px")
+                     )
+                   ),
+                   hr(),
+                   
+                   # --- Downstream analyses on a selected gene set ---
+                   fluidRow(
+                     column(12, h4("Downstream Analysis on Selected Gene Set"))
+                   ),
+                   fluidRow(
+                     column(3,
+                            uiOutput("dsSetSelectorUI"),
+                            hr(),
+                            h5("GO analysis"),
+                            selectInput("cmpGOont", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                            numericInput("cmpGOnum", "Categories to show", value = 10, min = 1, step = 1),
+                            actionButton("runCmpGOBtn", "Run GO", icon = icon("dna")),
+                            hr(),
+                            h5("GSEA"),
+                            selectInput("cmpGseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                            selectInput("cmpGseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
+                            numericInput("cmpGseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
+                            numericInput("cmpGseaMin", "Min gene set size", value = 10, min = 5, step = 5),
+                            numericInput("cmpGseaMax", "Max gene set size", value = 500, min = 50, step = 50),
+                            numericInput("cmpGseaNum", "Categories to show", value = 10, min = 1, step = 1),
+                            actionButton("runCmpGseaBtn", "Run GSEA", icon = icon("dna")),
+                            hr(),
+                            h5("GAGE / KEGG"),
+                            numericInput("cmpGageP", "q-value cutoff", value = 0.1, min = 0, max = 1, step = 0.01),
+                            numericInput("cmpGageMin", "Min geneset size", value = 10, min = 2, step = 1),
+                            numericInput("cmpGageMax", "Max geneset size", value = 1000, min = 2, step = 10),
+                            selectInput("cmpGageMetric", "Metric", c("log2FoldChange","stat"), selected = "stat"),
+                            checkboxInput("cmpGageSameDir", "Same direction (one-sided)", value = TRUE),
+                            actionButton("runCmpGageBtn", "Run GAGE", icon = icon("dna"))
+                     ),
+                     column(9,
+                            tabsetPanel(id = "cmpDownstreamTabs",
+                                        tabPanel("GO Barplot",
+                                                 plotOutput("cmpGOplot", height = "450px"),
+                                                 DT::dataTableOutput("cmpGOtable"),
+                                                 downloadButton("dl_cmp_go", "Download GO table")
+                                        ),
+                                        tabPanel("GSEA",
+                                                 plotOutput("cmpGseaDotplot", height = "350px"),
+                                                 selectizeInput("cmpGseaTerm", "Show enrichment plot for:", choices = NULL),
+                                                 plotOutput("cmpGseaEnrichPlot", height = "300px"),
+                                                 DT::dataTableOutput("cmpGseaTable"),
+                                                 downloadButton("dl_cmp_gsea", "Download GSEA table")
+                                        ),
+                                        tabPanel("GAGE / Pathview",
+                                                 fluidRow(
+                                                   column(6,
+                                                          h5("Upregulated pathways"),
+                                                          DT::dataTableOutput("cmpGageUpTable")
+                                                   ),
+                                                   column(6,
+                                                          h5("Downregulated pathways"),
+                                                          DT::dataTableOutput("cmpGageDownTable")
+                                                   )
+                                                 ),
+                                                 hr(),
+                                                 fluidRow(
+                                                   column(4,
+                                                          selectInput("cmpKeggPathway", "Pathway to render:", choices = NULL),
+                                                          actionButton("drawCmpPathviewBtn", "Draw Pathview"),
+                                                          downloadButton("dl_cmp_pathview", "Download PNG")
+                                                   ),
+                                                   column(8,
+                                                          imageOutput("cmpPathviewImg", height = "500px")
+                                                   )
+                                                 )
+                                        )
+                            )
+                     )
+                   )
+          ) # end Compare Contrasts tabPanel
         )
       ),
     )
@@ -839,7 +999,7 @@ server <- function(input, output, session) {
       
       orgdb_name <- isolate(input$organism)
       orgdb <- isolate(get(orgdb_name))
-
+      
       # First, ensure we have a clean data frame with no length mismatches
       res_clean <- ba$res_entrez[complete.cases(ba$res_entrez[c("padj", "log2FoldChange", "ENTREZID")]), ]
       
@@ -860,8 +1020,8 @@ server <- function(input, output, session) {
       
       # Run GO enrichment analysis with goana
       go_results <- limma::goana(de = entrez_id_vector, species = sp, 
-                          universe = universe_entrez_ids, 
-                          covariate = gene_lengths)
+                                 universe = universe_entrez_ids, 
+                                 covariate = gene_lengths)
       
       incProgress(0.8)
       appendLog("GO analysis complete.")
@@ -887,7 +1047,7 @@ server <- function(input, output, session) {
       theme_minimal() +
       labs(x = "GO Terms", y = "-log10(p-value)", title = paste("Top GO Terms", 
                                                                 isolate(input$GOontology), sep = ": ")
-           )
+      )
   })
   
   ###---Interactive volcano plot output---###
@@ -1288,6 +1448,816 @@ server <- function(input, output, session) {
       file.copy(png_file, file, overwrite = TRUE)
     }
   )
+  
+  # ============================================================
+  # COMPARE CONTRASTS – server logic
+  # ============================================================
+  
+  # --- Reactive stores ---
+  extraContrasts <- reactiveVal(list())   # list of contrast specs added by user
+  vennGenesets   <- reactiveVal(NULL)     # named list of gene-symbol vectors per contrast
+  vennSets       <- reactiveVal(NULL)     # the Venn set membership breakdown
+  cmpGageRes     <- reactiveVal(NULL)     # GAGE results for selected gene set
+  cmpGseaRes     <- reactiveVal(NULL)     # GSEA results for selected gene set
+  cmpSelectedGenes <- reactiveVal(NULL)   # DEG data.frame for selected Venn region
+  
+  # --- Dynamic UI: numerator / denominator selects for adding contrasts ---
+  output$cmpNumeratorUI <- renderUI({
+    req(input$groupOrder)
+    selectInput("cmpNumerator", "Numerator (treatment):", choices = input$groupOrder)
+  })
+  output$cmpDenominatorUI <- renderUI({
+    req(input$groupOrder)
+    selectInput("cmpDenominator", "Denominator (reference):", choices = input$groupOrder)
+  })
+  
+  # --- Add a contrast ---
+  observeEvent(input$addContrastBtn, {
+    req(input$cmpNumerator, input$cmpDenominator)
+    if (input$cmpNumerator == input$cmpDenominator) {
+      showNotification("Numerator and denominator must be different groups.", type = "error")
+      return()
+    }
+    label <- paste0(input$cmpNumerator, "_vs_", input$cmpDenominator)
+    new_entry <- list(
+      label     = label,
+      numerator = input$cmpNumerator,
+      denominator = input$cmpDenominator,
+      lfc       = input$cmpLFC,
+      padj      = input$cmpPadj
+    )
+    current <- extraContrasts()
+    # Avoid duplicate labels
+    if (any(sapply(current, `[[`, "label") == label)) {
+      showNotification(paste("Contrast", label, "already added."), type = "warning")
+      return()
+    }
+    extraContrasts(c(current, list(new_entry)))
+    showNotification(paste("Added contrast:", label), type = "message")
+  })
+  
+  observeEvent(input$clearContrastsBtn, {
+    extraContrasts(list())
+    vennGenesets(NULL)
+    vennSets(NULL)
+    showNotification("All extra contrasts cleared.", type = "message")
+  })
+  
+  # --- Show table of contrasts (primary + extras) ---
+  output$contrastListTable <- renderTable({
+    req(analysisResults())
+    primary <- data.frame(
+      Label       = paste0(input$contrastNumerator, "_vs_", input$contrastDenominator, " [PRIMARY]"),
+      Numerator   = input$contrastNumerator,
+      Denominator = input$contrastDenominator,
+      LFC         = input$lfcThreshold,
+      Padj        = input$padjThreshold,
+      stringsAsFactors = FALSE
+    )
+    extras <- extraContrasts()
+    if (length(extras) == 0) return(primary)
+    extra_df <- do.call(rbind, lapply(extras, function(x) {
+      data.frame(Label = x$label, Numerator = x$numerator,
+                 Denominator = x$denominator, LFC = x$lfc, Padj = x$padj,
+                 stringsAsFactors = FALSE)
+    }))
+    rbind(primary, extra_df)
+  })
+  
+  # ---- Helper: run a DESeq2 contrast and return sig gene symbols ----
+  run_contrast_degs <- function(dds, numerator, denominator, lfc_thr, padj_thr, direction = "both") {
+    res_c <- results(dds,
+                     lfcThreshold = lfc_thr,
+                     altHypothesis = "greaterAbs",
+                     alpha = padj_thr,
+                     contrast = c("Group", numerator, denominator))
+    res_df <- as.data.frame(res_c)
+    res_df <- res_df[!is.na(res_df$padj) & !is.na(res_df$log2FoldChange), ]
+    
+    if (direction == "both") {
+      sig <- res_df[res_df$padj < padj_thr & abs(res_df$log2FoldChange) >= lfc_thr, ]
+    } else if (direction == "up") {
+      sig <- res_df[res_df$padj < padj_thr & res_df$log2FoldChange >= lfc_thr, ]
+    } else {
+      sig <- res_df[res_df$padj < padj_thr & res_df$log2FoldChange <= -lfc_thr, ]
+    }
+    list(genes = rownames(sig), res_df = res_df, sig_df = sig)
+  }
+  
+  # ---- Run Venn / Euler ----
+  observeEvent(input$runVennBtn, {
+    req(analysisResults())
+    dds <- analysisResults()$dds
+    dir <- input$vennDEGdirection
+    
+    withProgress(message = "Computing contrasts for Venn...", value = 0, {
+      
+      # Primary contrast
+      primary_label <- paste0(input$contrastNumerator, "_vs_", input$contrastDenominator)
+      primary_data  <- run_contrast_degs(dds, 
+                                         input$contrastNumerator, input$contrastDenominator,
+                                         input$lfcThreshold, input$padjThreshold, dir)
+      genesets  <- list()
+      sig_dfs   <- list()   # store per-contrast significant results with correct stats
+      genesets[[primary_label]] <- primary_data$genes
+      sig_dfs[[primary_label]]  <- primary_data$sig_df
+      
+      extras <- extraContrasts()
+      incProgress(0.3)
+      
+      for (i in seq_along(extras)) {
+        x <- extras[[i]]
+        dat <- run_contrast_degs(dds, x$numerator, x$denominator, x$lfc, x$padj, dir)
+        genesets[[x$label]] <- dat$genes
+        sig_dfs[[x$label]]  <- dat$sig_df
+        incProgress(0.3 / max(length(extras), 1))
+      }
+      
+      vennGenesets(genesets)
+      
+      # Compute set membership
+      all_genes <- unique(unlist(genesets))
+      membership_mat <- sapply(genesets, function(gs) all_genes %in% gs)
+      rownames(membership_mat) <- all_genes
+      vennSets(list(genesets = genesets, sig_dfs = sig_dfs, membership = membership_mat))
+      
+      incProgress(0.4)
+    })
+    
+    showNotification("Venn diagram ready.", type = "message")
+  })
+  
+  output$vennPlot <- renderPlot({
+    req(vennSets())
+    gs <- vennSets()$genesets
+    validate(need(length(gs) >= 2, "Please add at least one extra contrast and click 'Draw Diagram'."))
+    
+    if (input$vennType == "venn") {
+      ggVennDiagram::ggVennDiagram(gs, label_alpha = 0) +
+        scale_fill_gradient(low = "#DDF093", high = "#638475") +
+        theme_void() +
+        theme(legend.position = "none")
+    } else {
+      fit <- eulerr::euler(gs)
+      plot(fit,
+           fills = list(fill = RColorBrewer::brewer.pal(min(length(gs), 8), "Set2"), alpha = 0.5),
+           edges = list(col = "black", lex = 2),
+           quantities = TRUE,
+           labels = list(font = 2))
+    }
+  })
+  
+  output$dl_venn <- downloadHandler(
+    filename = function() paste0("venn_diagram_", Sys.Date(), ".png"),
+    content = function(file) {
+      req(vennSets())
+      gs <- vennSets()$genesets
+      png(file, width = 1800, height = 1400, res = 150)
+      if (input$vennType == "euler") {
+        fit <- eulerr::euler(gs)
+        print(plot(fit,
+                   fills = list(fill = RColorBrewer::brewer.pal(min(length(gs), 8), "Set2"), alpha = 0.5),
+                   edges = list(col = "black", lex = 2),
+                   quantities = TRUE,
+                   labels = list(font = 2)))
+      } else {
+        p <- ggVennDiagram::ggVennDiagram(gs, label_alpha = 0) +
+          scale_fill_gradient(low = "#DDF093", high = "#638475") +
+          theme_void() + theme(legend.position = "none")
+        print(p)
+      }
+      dev.off()
+    }
+  )
+  
+  # ---- Venn set selector ----
+  # Build human-readable names for all Venn regions
+  venn_region_choices <- reactive({
+    req(vennSets())
+    gs <- vennSets()$genesets
+    nms <- names(gs)
+    n <- length(nms)
+    regions <- list()
+    for (i in 1:n) {
+      combos <- combn(n, i, simplify = FALSE)
+      for (co in combos) {
+        label <- paste(nms[co], collapse = " ∩ ")
+        if (i < n) label <- paste0(label, " (unique to these)")
+        regions[[label]] <- co
+      }
+    }
+    # Add "all shared" shortcut at top if >2
+    regions
+  })
+  
+  output$vennSetSelectorUI <- renderUI({
+    req(vennSets())
+    gs <- vennSets()$genesets
+    nms <- names(gs)
+    n   <- length(nms)
+    
+    # Build choices: shared (all), unique to each, and intersection pairs
+    choices <- c()
+    # Shared across ALL
+    choices["Shared across ALL contrasts"] <- "ALL_SHARED"
+    # Unique to each
+    for (nm in nms) {
+      choices[paste0("Unique to: ", nm)] <- paste0("UNIQUE__", nm)
+    }
+    # Pairwise intersections (if >2 contrasts)
+    if (n > 2) {
+      pairs <- combn(nms, 2, simplify = FALSE)
+      for (p in pairs) {
+        lbl <- paste0("Shared between: ", paste(p, collapse = " & "))
+        choices[lbl] <- paste0("PAIR__", paste(p, collapse = "|||"))
+      }
+    }
+    tagList(
+      selectInput("vennSetChoice", "Select gene set:", choices = choices, selected = "ALL_SHARED"),
+      conditionalPanel(
+        condition = "!input.vennSetChoice.startsWith('UNIQUE__')",
+        selectInput("vennConcordance", "Direction filter (shared sets):",
+                    choices = c(
+                      "All shared (average stats)"     = "all",
+                      "Concordant UP in all contrasts" = "up",
+                      "Concordant DOWN in all contrasts" = "down",
+                      "Discordant only (mixed direction)" = "discordant"
+                    ),
+                    selected = "all"),
+        helpText("Concordant: gene goes same direction in every relevant contrast.")
+      )
+    )
+  })
+  
+  # Helper to extract genes for a region choice
+  extract_venn_genes <- function(gs, choice) {
+    nms <- names(gs)
+    if (choice == "ALL_SHARED") {
+      return(Reduce(intersect, gs))
+    }
+    if (startsWith(choice, "UNIQUE__")) {
+      focal <- sub("^UNIQUE__", "", choice)
+      others <- setdiff(nms, focal)
+      unique_genes <- gs[[focal]]
+      for (o in others) unique_genes <- setdiff(unique_genes, gs[[o]])
+      return(unique_genes)
+    }
+    if (startsWith(choice, "PAIR__")) {
+      pair_nms <- strsplit(sub("^PAIR__", "", choice), "\\|\\|\\|")[[1]]
+      return(Reduce(intersect, gs[pair_nms]))
+    }
+    character(0)
+  }
+  
+  # ── Helper: classify concordance for shared gene sets ──────────────────────
+  # Returns a data frame (one row per gene) with:
+  #   GeneID, Direction_<contrast> columns (UP/DOWN), Concordance (concordant_up/down/discordant)
+  #   plus mean log2FoldChange, mean stat, mean padj across contrasts
+  build_shared_gene_table <- function(chosen_genes, src_names, sig_dfs) {
+    parts <- lapply(src_names, function(nm) {
+      df <- sig_dfs[[nm]]
+      df <- df[rownames(df) %in% chosen_genes, , drop = FALSE]
+      if (nrow(df) == 0) return(NULL)
+      df$GeneID   <- rownames(df)
+      df$Contrast <- nm
+      df[, c("GeneID", "Contrast", "log2FoldChange", "stat", "padj",
+             intersect(c("baseMean", "lfcSE", "pvalue"), names(df)))]
+    })
+    parts <- Filter(Negate(is.null), parts)
+    if (length(parts) == 0) return(NULL)
+    
+    long_df <- do.call(rbind, parts)
+    rownames(long_df) <- NULL
+    
+    # Wide summary: one row per gene
+    lfc_wide <- reshape(long_df[, c("GeneID", "Contrast", "log2FoldChange")],
+                        idvar = "GeneID", timevar = "Contrast", direction = "wide")
+    names(lfc_wide) <- gsub("log2FoldChange.", "LFC_", names(lfc_wide), fixed = TRUE)
+    
+    padj_wide <- reshape(long_df[, c("GeneID", "Contrast", "padj")],
+                         idvar = "GeneID", timevar = "Contrast", direction = "wide")
+    names(padj_wide) <- gsub("padj.", "padj_", names(padj_wide), fixed = TRUE)
+    
+    stat_wide <- reshape(long_df[, c("GeneID", "Contrast", "stat")],
+                         idvar = "GeneID", timevar = "Contrast", direction = "wide")
+    names(stat_wide) <- gsub("stat.", "stat_", names(stat_wide), fixed = TRUE)
+    
+    # Direction per contrast
+    lfc_cols <- grep("^LFC_", names(lfc_wide), value = TRUE)
+    dir_wide  <- lfc_wide
+    for (col in lfc_cols) {
+      nm  <- sub("^LFC_", "", col)
+      dir_wide[[paste0("Direction_", nm)]] <- ifelse(dir_wide[[col]] > 0, "UP ↑", "DOWN ↓")
+    }
+    
+    # Concordance: all UP, all DOWN, or discordant
+    dir_cols   <- grep("^Direction_", names(dir_wide), value = TRUE)
+    directions <- dir_wide[, dir_cols, drop = FALSE]
+    dir_wide$Concordance <- apply(directions, 1, function(row) {
+      vals <- unique(row)
+      if (length(vals) == 1 && vals == "UP ↑")   return("Concordant UP ↑")
+      if (length(vals) == 1 && vals == "DOWN ↓") return("Concordant DOWN ↓")
+      return("Discordant ↕")
+    })
+    
+    # Mean stats
+    lfc_mat  <- as.matrix(lfc_wide[, lfc_cols, drop = FALSE])
+    stat_mat <- as.matrix(stat_wide[, grep("^stat_", names(stat_wide)), drop = FALSE])
+    padj_mat <- as.matrix(padj_wide[, grep("^padj_", names(padj_wide)), drop = FALSE])
+    dir_wide$mean_log2FoldChange <- rowMeans(lfc_mat,  na.rm = TRUE)
+    dir_wide$mean_stat           <- rowMeans(stat_mat, na.rm = TRUE)
+    dir_wide$mean_padj           <- rowMeans(padj_mat, na.rm = TRUE)
+    
+    # Merge padj columns in
+    merged <- merge(dir_wide, padj_wide, by = "GeneID")
+    merged <- merge(merged,   stat_wide, by = "GeneID")
+    
+    # Reorder: GeneID, Concordance, Direction_*, LFC_*, padj_*, stat_*, means
+    first_cols  <- c("GeneID", "Concordance")
+    dir_c  <- grep("^Direction_", names(merged), value = TRUE)
+    lfc_c  <- grep("^LFC_",       names(merged), value = TRUE)
+    padj_c <- grep("^padj_",      names(merged), value = TRUE)
+    stat_c <- grep("^stat_",      names(merged), value = TRUE)
+    mean_c <- c("mean_log2FoldChange", "mean_stat", "mean_padj")
+    merged <- merged[, c(first_cols, dir_c, lfc_c, padj_c, stat_c, mean_c)]
+    merged
+  }
+  
+  # ── Helper: apply concordance filter to a wide gene table ───────────────────
+  apply_concordance_filter <- function(gene_df, concordance_choice) {
+    if (concordance_choice == "all")        return(gene_df)
+    if (concordance_choice == "up")         return(gene_df[gene_df$Concordance == "Concordant UP ↑",   , drop = FALSE])
+    if (concordance_choice == "down")       return(gene_df[gene_df$Concordance == "Concordant DOWN ↓", , drop = FALSE])
+    if (concordance_choice == "discordant") return(gene_df[gene_df$Concordance == "Discordant ↕",      , drop = FALSE])
+    gene_df
+  }
+  
+  # Load genes for selected region
+  observeEvent(input$loadVennGenesBtn, {
+    req(vennSets(), analysisResults())
+    vs       <- vennSets()
+    gs       <- vs$genesets
+    sig_dfs  <- vs$sig_dfs
+    choice   <- input$vennSetChoice
+    chosen_genes <- extract_venn_genes(gs, choice)
+    
+    if (length(chosen_genes) == 0) {
+      showNotification("No genes in this set.", type = "warning")
+      cmpSelectedGenes(NULL)
+      return()
+    }
+    
+    if (startsWith(choice, "UNIQUE__")) {
+      # Unique set: one row per gene, stats from that contrast only
+      focal   <- sub("^UNIQUE__", "", choice)
+      src_df  <- sig_dfs[[focal]]
+      gene_df <- src_df[rownames(src_df) %in% chosen_genes, , drop = FALSE]
+      gene_df$GeneID   <- rownames(gene_df)
+      gene_df$Contrast <- focal
+      gene_df <- gene_df[, c("GeneID", "Contrast", setdiff(names(gene_df), c("GeneID", "Contrast")))]
+      rownames(gene_df) <- NULL
+      
+    } else {
+      # Shared set: wide table with concordance annotation
+      src_names <- if (choice == "ALL_SHARED") names(gs) else strsplit(sub("^PAIR__", "", choice), "\\|\\|\\|")[[1]]
+      gene_df   <- build_shared_gene_table(chosen_genes, src_names, sig_dfs)
+      
+      if (is.null(gene_df) || nrow(gene_df) == 0) {
+        showNotification("No matching genes found in contrast results.", type = "warning")
+        cmpSelectedGenes(NULL)
+        return()
+      }
+      
+      # Apply concordance filter
+      conc_choice <- if (!is.null(input$vennConcordance)) input$vennConcordance else "all"
+      gene_df <- apply_concordance_filter(gene_df, conc_choice)
+      
+      if (nrow(gene_df) == 0) {
+        showNotification("No genes match the selected direction filter.", type = "warning")
+        cmpSelectedGenes(NULL)
+        return()
+      }
+    }
+    
+    cmpSelectedGenes(gene_df)
+    showNotification(paste(nrow(gene_df), "genes loaded."), type = "message")
+  })
+  
+  output$vennGenesTable <- DT::renderDataTable({
+    req(cmpSelectedGenes())
+    DT::datatable(cmpSelectedGenes(), options = list(pageLength = 10), rownames = FALSE)
+  })
+  
+  output$dl_venn_genes <- downloadHandler(
+    filename = function() paste0("venn_genes_", Sys.Date(), ".csv"),
+    content  = function(f) readr::write_csv(req(cmpSelectedGenes()), f)
+  )
+  
+  # ---- Volcano plot coloured by Venn membership ----
+  output$vennVolcContrastUI <- renderUI({
+    req(vennSets())
+    selectInput("vennVolcContrast", "Choose contrast to plot:", 
+                choices = names(vennSets()$genesets))
+  })
+  
+  observeEvent(input$runCmpVolcBtn, {
+    req(vennSets(), analysisResults())
+    output$cmpVolcanoPlot <- renderPlot({
+      gs    <- vennSets()$genesets
+      dds   <- analysisResults()$dds
+      focal <- input$vennVolcContrast
+      
+      # Get the contrast spec
+      all_contrasts <- c(
+        list(list(label = paste0(input$contrastNumerator, "_vs_", input$contrastDenominator),
+                  numerator = input$contrastNumerator, denominator = input$contrastDenominator,
+                  lfc = input$lfcThreshold, padj = input$padjThreshold)),
+        extraContrasts()
+      )
+      spec <- Filter(function(x) x$label == focal, all_contrasts)[[1]]
+      
+      res_c <- as.data.frame(results(dds, contrast = c("Group", spec$numerator, spec$denominator)))
+      res_c <- res_c[!is.na(res_c$padj) & !is.na(res_c$log2FoldChange), ]
+      res_c$GeneID <- rownames(res_c)
+      
+      # Determine shared vs unique membership with concordance for shared genes
+      shared_genes <- if (length(gs) > 1) Reduce(intersect, gs) else gs[[1]]
+      unique_genes <- setdiff(gs[[focal]], shared_genes)
+      
+      vs_local      <- vennSets()
+      sig_dfs_local <- vs_local$sig_dfs
+      other_nms     <- setdiff(names(gs), focal)
+      
+      concordant_up <- concordant_down <- discordant <- character(0)
+      
+      for (g in shared_genes) {
+        focal_lfc <- res_c$log2FoldChange[res_c$GeneID == g]
+        if (length(focal_lfc) == 0 || is.na(focal_lfc)) next
+        focal_dir <- sign(focal_lfc)
+        other_dirs <- sapply(other_nms, function(nm) {
+          v <- sig_dfs_local[[nm]]$log2FoldChange[rownames(sig_dfs_local[[nm]]) == g]
+          if (length(v) == 0) return(NA_real_) else sign(v[1])
+        })
+        other_dirs <- other_dirs[!is.na(other_dirs)]
+        if (length(other_dirs) == 0 || all(other_dirs == focal_dir)) {
+          if (focal_dir > 0) concordant_up   <- c(concordant_up,   g)
+          else               concordant_down <- c(concordant_down, g)
+        } else {
+          discordant <- c(discordant, g)
+        }
+      }
+      
+      res_c$Category <- "Not significant"
+      res_c$Category[res_c$GeneID %in% unique_genes]    <- paste0("Unique to ", focal)
+      res_c$Category[res_c$GeneID %in% concordant_up]   <- "Shared concordant UP ↑"
+      res_c$Category[res_c$GeneID %in% concordant_down] <- "Shared concordant DOWN ↓"
+      res_c$Category[res_c$GeneID %in% discordant]      <- "Shared discordant ↕"
+      
+      # Top genes to label
+      sig_rows <- res_c[res_c$Category != "Not significant", ]
+      top_lab  <- head(sig_rows[order(sig_rows$padj), "GeneID"], input$cmpVolcTop)
+      res_c$label <- ifelse(res_c$GeneID %in% top_lab, res_c$GeneID, "")
+      
+      unique_col_name <- paste0("Unique to ", focal)
+      cat_colors <- c(
+        "Not significant"                 = "grey75",
+        "Shared concordant UP ↑"     = "#2166ac",
+        "Shared concordant DOWN ↓"   = "#d6604d",
+        "Shared discordant ↕"        = "#9970ab"
+      )
+      cat_colors[unique_col_name] <- "#f4a736"
+      
+      ggplot(res_c, aes(x = log2FoldChange, y = -log10(padj), colour = Category, label = label)) +
+        geom_point(size = input$cmpVolcPtSz, alpha = 0.7) +
+        ggrepel::geom_text_repel(size = 3, max.overlaps = 20, show.legend = FALSE) +
+        scale_colour_manual(values = cat_colors) +
+        geom_vline(xintercept = c(-spec$lfc, spec$lfc), linetype = "dashed", colour = "grey40") +
+        geom_hline(yintercept = -log10(spec$padj), linetype = "dashed", colour = "grey40") +
+        theme_minimal(base_size = 13) +
+        labs(title = paste("Volcano:", focal),
+             x = "log2 Fold Change", y = "-log10(adjusted p-value)",
+             colour = "Gene category")
+    })
+  })
+  
+  # ---- Downstream selector UI ----
+  output$dsSetSelectorUI <- renderUI({
+    req(vennSets())
+    gs  <- vennSets()$genesets
+    nms <- names(gs)
+    choices <- c("ALL SHARED" = "ALL_SHARED")
+    for (nm in nms) choices[paste0("Unique to: ", nm)] <- paste0("UNIQUE__", nm)
+    if (length(nms) > 2) {
+      pairs <- combn(nms, 2, simplify = FALSE)
+      for (p in pairs) {
+        lbl <- paste("Shared:", paste(p, collapse = " & "))
+        choices[lbl] <- paste0("PAIR__", paste(p, collapse = "|||"))
+      }
+    }
+    tagList(
+      selectInput("dsSetChoice", "Analyse gene set:", choices = choices, selected = "ALL_SHARED"),
+      conditionalPanel(
+        condition = "!input.dsSetChoice.startsWith('UNIQUE__')",
+        selectInput("dsConcordance", "Direction filter for downstream analyses:",
+                    choices = c(
+                      "All shared (average stats)"        = "all",
+                      "Concordant UP in all contrasts"    = "up",
+                      "Concordant DOWN in all contrasts"  = "down",
+                      "Discordant only (mixed direction)" = "discordant"
+                    ),
+                    selected = "all"),
+        helpText("Filters which genes are passed to GO / GSEA / GAGE based on directional concordance across contrasts.")
+      ),
+      p(em("Tip: load genes above first to preview concordance before running analyses."))
+    )
+  })
+  
+  # Helper: get ENTREZ IDs for a selected Venn region
+  get_entrez_for_set <- function(choice) {
+    req(vennSets(), analysisResults())
+    vs         <- vennSets()
+    gs         <- vs$genesets
+    sig_dfs    <- vs$sig_dfs
+    symbols    <- extract_venn_genes(gs, choice)
+    res_entrez <- analysisResults()$res_entrez  # kept for gene_lengths / universe
+    orgdb_name <- isolate(input$organism)
+    orgdb      <- get(orgdb_name)
+    
+    from_type <- if (orgdb_name == "org.Dm.eg.db") {
+      if (isTRUE(input$convertFlybase)) "SYMBOL" else "FLYBASE"
+    } else { "SYMBOL" }
+    
+    mapped <- clusterProfiler::bitr(symbols, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
+    
+    # Build a stats subset using the correct contrast sig_dfs
+    # For downstream ranking (GSEA/GAGE), pool genes from all relevant contrasts
+    # and use mean stat/LFC when a gene appears in multiple contrasts.
+    if (startsWith(choice, "UNIQUE__")) {
+      focal    <- sub("^UNIQUE__", "", choice)
+      src_df   <- sig_dfs[[focal]]
+      stats_df <- src_df[rownames(src_df) %in% symbols, c("log2FoldChange", "stat", "padj"), drop = FALSE]
+      stats_df$GeneIDs <- rownames(stats_df)
+    } else {
+      src_names <- if (choice == "ALL_SHARED") names(gs) else strsplit(sub("^PAIR__", "", choice), "\\|\\|\\|")[[1]]
+      
+      # Build wide concordance table to apply direction filter
+      wide_tbl <- build_shared_gene_table(symbols, src_names, sig_dfs)
+      
+      # Apply concordance filter (uses input$vennConcordance if available)
+      conc_choice <- if (!is.null(input$dsConcordance)) input$dsConcordance else "all"
+      wide_tbl <- apply_concordance_filter(wide_tbl, conc_choice)
+      
+      if (is.null(wide_tbl) || nrow(wide_tbl) == 0) {
+        validate(need(FALSE, "No genes remain after concordance filter. Try a less restrictive direction filter."))
+      }
+      
+      # Use mean stats for ranking in GSEA/GAGE
+      stats_df <- data.frame(
+        GeneIDs        = wide_tbl$GeneID,
+        log2FoldChange = wide_tbl$mean_log2FoldChange,
+        stat           = wide_tbl$mean_stat,
+        padj           = wide_tbl$mean_padj,
+        stringsAsFactors = FALSE
+      )
+      rownames(stats_df) <- stats_df$GeneIDs
+      # Restrict symbols to filtered set
+      symbols <- wide_tbl$GeneID
+    }
+    
+    # Merge with ENTREZID mapping
+    res_entrez_subset <- merge(stats_df, mapped, by.x = "GeneIDs", by.y = from_type, all.x = FALSE)
+    # Also pull gene_lengths from the master res_entrez
+    res_entrez_subset <- merge(res_entrez_subset, 
+                               res_entrez[, c("GeneIDs", "gene_lengths")], 
+                               by = "GeneIDs", all.x = TRUE)
+    
+    list(symbols = symbols, entrez = mapped$ENTREZID, mapped = mapped,
+         res_entrez_subset = res_entrez_subset)
+  }
+  
+  # ---- Compare GO ----
+  observeEvent(input$runCmpGOBtn, {
+    req(vennSets(), analysisResults())
+    withProgress(message = "Running GO on selected gene set...", value = 0, {
+      info <- get_entrez_for_set(input$dsSetChoice)
+      sp   <- isolate(goSpeciesCode())
+      
+      universe_entrez <- analysisResults()$res_entrez$ENTREZID
+      gene_lengths_vec <- as.numeric(analysisResults()$res_entrez$gene_lengths)
+      names(gene_lengths_vec) <- analysisResults()$res_entrez$ENTREZID
+      
+      validate(need(length(info$entrez) >= 2, "Fewer than 2 genes with Entrez IDs; cannot run GO."))
+      
+      go_res <- limma::goana(de = info$entrez, species = sp,
+                             universe = universe_entrez,
+                             covariate = gene_lengths_vec[universe_entrez])
+      incProgress(0.9)
+      
+      output$cmpGOplot <- renderPlot({
+        topgo <- limma::topGO(go_res, ontology = input$cmpGOont, number = input$cmpGOnum)
+        ggplot(topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
+          geom_bar(stat = "identity", fill = "#638475") +
+          coord_flip() + theme_minimal() +
+          labs(x = "GO Term", y = "-log10(p-value)",
+               title = paste("GO", input$cmpGOont, "–", input$dsSetChoice))
+      })
+      
+      output$cmpGOtable <- DT::renderDataTable({
+        topgo <- limma::topGO(go_res, ontology = input$cmpGOont, number = input$cmpGOnum)
+        DT::datatable(topgo, options = list(pageLength = 10))
+      })
+      
+      output$dl_cmp_go <- downloadHandler(
+        filename = function() paste0("cmp_GO_", Sys.Date(), ".csv"),
+        content  = function(f) readr::write_csv(as.data.frame(go_res), f)
+      )
+      showNotification("GO complete.", type = "message")
+    })
+  })
+  
+  # ---- Compare GSEA ----
+  observeEvent(input$runCmpGseaBtn, {
+    req(vennSets(), analysisResults())
+    withProgress(message = "Running GSEA on selected gene set...", value = 0, {
+      info       <- get_entrez_for_set(input$dsSetChoice)
+      orgdb_name <- isolate(input$organism)
+      orgdb      <- get(orgdb_name)
+      
+      sub_res <- info$res_entrez_subset
+      validate(need(nrow(sub_res) >= input$cmpGseaMin, 
+                    "Not enough genes in this set for GSEA."))
+      
+      metric_col <- input$cmpGseaMetric
+      m <- sub_res[[metric_col]]
+      names(m) <- sub_res$ENTREZID
+      m <- m[is.finite(m)]
+      m <- tapply(m, names(m), max)
+      m <- sort(setNames(as.vector(m), names(m)), decreasing = TRUE)
+      
+      gse <- clusterProfiler::gseGO(
+        geneList     = m,
+        OrgDb        = orgdb,
+        keyType      = "ENTREZID",
+        ont          = input$cmpGseaOnt,
+        minGSSize    = input$cmpGseaMin,
+        maxGSSize    = input$cmpGseaMax,
+        pvalueCutoff = input$cmpGseaP,
+        verbose      = FALSE
+      )
+      cmpGseaRes(gse)
+      
+      df <- as.data.frame(gse)
+      updateSelectizeInput(session, "cmpGseaTerm",
+                           choices = df$ID, selected = head(df$ID, 1), server = TRUE)
+      
+      output$cmpGseaDotplot <- renderPlot({
+        gse_local <- cmpGseaRes()
+        req(gse_local)
+        df_check <- as.data.frame(gse_local)
+        validate(need(nrow(df_check) > 0, "No significant GSEA terms found."))
+        n_show <- min(input$cmpGseaNum, nrow(df_check))
+        enrichplot::dotplot(gse_local, showCategory = n_show)
+      })
+      output$cmpGseaEnrichPlot <- renderPlot({
+        gse_local <- cmpGseaRes()
+        req(gse_local, input$cmpGseaTerm)
+        df_check <- as.data.frame(gse_local)
+        validate(need(nrow(df_check) > 0, "No significant GSEA terms found."))
+        validate(need(input$cmpGseaTerm %in% df_check$ID, "Selected term not found in results."))
+        enrichplot::gseaplot2(gse_local, geneSetID = input$cmpGseaTerm, title = input$cmpGseaTerm)
+      })
+      output$cmpGseaTable <- DT::renderDataTable({
+        gse_local <- cmpGseaRes()
+        req(gse_local)
+        DT::datatable(as.data.frame(gse_local), options = list(pageLength = 10))
+      })
+      output$dl_cmp_gsea <- downloadHandler(
+        filename = function() paste0("cmp_GSEA_", Sys.Date(), ".csv"),
+        content  = function(f) readr::write_csv(as.data.frame(req(cmpGseaRes())), f)
+      )
+      incProgress(0.9)
+      showNotification("GSEA complete.", type = "message")
+    })
+  })
+  
+  # ---- Compare GAGE ----
+  observeEvent(input$runCmpGageBtn, {
+    req(vennSets(), analysisResults())
+    withProgress(message = "Running GAGE on selected gene set...", value = 0, {
+      info       <- get_entrez_for_set(input$dsSetChoice)
+      orgdb_name <- isolate(input$organism)
+      
+      # Choose KEGG prefix
+      sp_prefix <- switch(orgdb_name,
+                          "org.Rn.eg.db" = "rno",
+                          "org.Mm.eg.db" = "mmu",
+                          "org.Hs.eg.db" = "hsa",
+                          "org.Dm.eg.db" = "dme",
+                          "hsa"
+      )
+      
+      kg <- gage::kegg.gsets(sp_prefix, id.type = "entrez")
+      gsets <- kg$kg.sets[kg$sigmet.idx]
+      
+      sub_res    <- info$res_entrez_subset
+      metric_col <- input$cmpGageMetric
+      fc_vec     <- sub_res[[metric_col]]
+      names(fc_vec) <- sub_res$ENTREZID
+      fc_vec <- fc_vec[is.finite(fc_vec)]
+      
+      validate(need(length(fc_vec) >= input$cmpGageMin, 
+                    "Not enough genes with Entrez IDs for GAGE."))
+      
+      qcut <- input$cmpGageP
+      gr <- gage::gage(fc_vec, gsets = gsets,
+                       same.dir   = input$cmpGageSameDir,
+                       set.size   = c(input$cmpGageMin, input$cmpGageMax))
+      
+      sig_up   <- as.data.frame(gr$greater)
+      sig_down <- as.data.frame(gr$less)
+      
+      if ("q.val" %in% names(sig_up))   sig_up   <- sig_up[!is.na(sig_up$q.val)   & sig_up$q.val   <= qcut, , drop = FALSE]
+      if ("q.val" %in% names(sig_down)) sig_down <- sig_down[!is.na(sig_down$q.val) & sig_down$q.val <= qcut, , drop = FALSE]
+      
+      # Safe column assignment - guard against 0-row data frames
+      if (nrow(sig_up) > 0) {
+        rn_up <- rownames(sig_up)
+        sig_up$PathwayID   <- substr(rn_up, 1, 8)
+        sig_up$Direction   <- "Up"
+        sig_up$Description <- trimws(sub("^\\S+\\s*", "", rn_up))
+      }
+      if (nrow(sig_down) > 0) {
+        rn_down <- rownames(sig_down)
+        sig_down$PathwayID   <- substr(rn_down, 1, 8)
+        sig_down$Direction   <- "Down"
+        sig_down$Description <- trimws(sub("^\\S+\\s*", "", rn_down))
+      }
+      cmpGageRes(list(up = sig_up, down = sig_down, fc = fc_vec, species = sp_prefix))
+      
+      all_ids <- unique(c(sig_up$PathwayID, sig_down$PathwayID))
+      updateSelectInput(session, "cmpKeggPathway",
+                        choices  = all_ids,
+                        selected = if (length(all_ids)) all_ids[[1]] else NULL)
+      
+      output$cmpGageUpTable <- DT::renderDataTable({
+        if (!NROW(sig_up)) return(DT::datatable(data.frame(Message = "None"), options = list(dom = "t"), rownames = FALSE))
+        DT::datatable(sig_up, options = list(pageLength = 10), rownames = FALSE)
+      })
+      output$cmpGageDownTable <- DT::renderDataTable({
+        if (!NROW(sig_down)) return(DT::datatable(data.frame(Message = "None"), options = list(dom = "t"), rownames = FALSE))
+        DT::datatable(sig_down, options = list(pageLength = 10), rownames = FALSE)
+      })
+      
+      incProgress(0.9)
+      showNotification("GAGE complete.", type = "message")
+    })
+  })
+  
+  # ---- Pathview for Compare tab ----
+  observeEvent(input$drawCmpPathviewBtn, {
+    req(cmpGageRes())
+    output$cmpPathviewImg <- renderImage({
+      gr  <- cmpGageRes()
+      fc  <- gr$fc
+      sp  <- gr$species
+      pid <- substr(req(input$cmpKeggPathway), 1, 8)
+      validate(need(nzchar(pid), "Select a pathway."))
+      validate(need(length(fc) > 0, "No fold change data."))
+      
+      tmpdir <- tempfile("cmp_pv_"); dir.create(tmpdir)
+      oldwd  <- getwd(); setwd(tmpdir); on.exit(setwd(oldwd), add = TRUE)
+      
+      try(pathview::pathview(gene.data = fc, pathway.id = pid, species = sp,
+                             gene.idtype = "entrez", kegg.native = TRUE,
+                             out.suffix = "cmp_shiny"), silent = TRUE)
+      
+      pngs    <- list.files(tmpdir, pattern = "\\.png$", full.names = TRUE)
+      overlay <- pngs[grepl(paste0("^", pid, ".*pathview.*\\.png$"), basename(pngs))]
+      png_f   <- if (length(overlay)) overlay[which.max(file.mtime(overlay))] else pngs[which.max(file.mtime(pngs))]
+      validate(need(length(png_f) && file.exists(png_f), "Pathview failed for this pathway."))
+      list(src = png_f, contentType = "image/png", alt = pid)
+    }, deleteFile = FALSE)
+  })
+  
+  output$dl_cmp_pathview <- downloadHandler(
+    filename = function() paste0("cmp_pathview_", substr(req(input$cmpKeggPathway), 1, 8), ".png"),
+    content  = function(file) {
+      gr  <- req(cmpGageRes()); fc <- gr$fc; sp <- gr$species
+      pid <- substr(req(input$cmpKeggPathway), 1, 8)
+      tmpdir <- tempfile("cmp_pv_dl_"); dir.create(tmpdir)
+      oldwd  <- getwd(); setwd(tmpdir); on.exit(setwd(oldwd), add = TRUE)
+      pathview::pathview(gene.data = fc, pathway.id = pid, species = sp,
+                         kegg.native = TRUE, out.suffix = "cmp_dl")
+      pngs    <- list.files(tmpdir, pattern = "\\.png$", full.names = TRUE)
+      overlay <- pngs[grepl(paste0("^", pid, ".*pathview.*\\.png$"), basename(pngs))]
+      png_f   <- if (length(overlay)) overlay[which.max(file.mtime(overlay))] else pngs[which.max(file.mtime(pngs))]
+      file.copy(png_f, file, overwrite = TRUE)
+    }
+  )
+  
+  # ============================================================
+  # END Compare Contrasts
+  # ============================================================
   
   output$analysisReady <- reactive({ !is.null(analysisResults()) })
   outputOptions(output, "analysisReady", suspendWhenHidden = FALSE)
