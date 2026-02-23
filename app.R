@@ -84,7 +84,7 @@ ui <- fluidPage(
   titlePanel("RNA-seq Analysis"),
   
   sidebarLayout(
-    sidebarPanel(
+    sidebarPanel(width = 3,
       fileInput("countsFile", "Upload Count Data (.rds, .csv, .tsv, .txt)",
                 accept = c(".rds", ".csv", ".tsv", ".txt")),
       conditionalPanel(
@@ -345,7 +345,7 @@ ui <- fluidPage(
                                                     "Upregulated only" = "up",
                                                     "Downregulated only" = "down"),
                                         selected = "both"),
-                            actionButton("runVennBtn", "Draw Diagram", icon = icon("circle")),
+                            actionButton("runVennBtn", "Find DEGs and Draw Diagram", icon = icon("circle")),
                             br(), br(),
                             downloadButton("dl_venn", "Download PNG")
                      ),
