@@ -81,11 +81,21 @@ options(shiny.maxRequestSize = 50 * 1024^2)  # 50 MB
 
 
 ui <- fluidPage(
-  titlePanel("RNA-seq Analysis from featureCounts (.rds)"),
+  titlePanel("RNA-seq Analysis"),
   
   sidebarLayout(
     sidebarPanel(
-      fileInput("rdsFile", "Upload featureCounts .rds File", accept = ".rds"),
+      fileInput("countsFile", "Upload Count Data (.rds, .csv, .tsv, .txt)",
+                accept = c(".rds", ".csv", ".tsv", ".txt")),
+      conditionalPanel(
+        condition = "output.isPlainCountTable",
+        fileInput("geneLengthFile",
+                  "Upload Gene Lengths (optional, .csv/.tsv/.txt — two columns: GeneID, Length)",
+                  accept = c(".csv", ".tsv", ".txt")),
+        helpText("Providing gene lengths enables length-bias correction in GO analysis.",
+                 "The file should have a header row with columns named GeneID and Length (bp).",
+                 "If omitted, GO will run without length correction.")
+      ),
       fileInput("sampleInfoFile", "Upload SampleInfo.txt", accept = c(".txt", ".tsv")),
       selectInput("organism", "Select organism:",
                   choices = c(
@@ -474,10 +484,88 @@ server <- function(input, output, session) {
     logText()
   })
   
-  # Load uploaded featureCounts data
+  # Expose whether the uploaded file is a plain count table (not an RDS)
+  # Used by the conditionalPanel to show/hide the gene length file input
+  output$isPlainCountTable <- reactive({
+    req(input$countsFile)
+    tolower(tools::file_ext(input$countsFile$name)) != "rds"
+  })
+  outputOptions(output, "isPlainCountTable", suspendWhenHidden = FALSE)
+  
+  # Optional gene length table reactive (only relevant for plain count tables)
+  gene_lengths_table <- reactive({
+    req(input$geneLengthFile)
+    path <- input$geneLengthFile$datapath
+    ext  <- tolower(tools::file_ext(input$geneLengthFile$name))
+    sep  <- if (ext == "csv") "," else "\t"
+    tbl  <- read.delim(path, sep = sep, header = TRUE,
+                       stringsAsFactors = FALSE, check.names = FALSE)
+    # Accept flexible column names: first column = GeneID, second = Length
+    # but also honour explicit "GeneID" / "Length" headers
+    if (!all(c("GeneID", "Length") %in% colnames(tbl))) {
+      colnames(tbl)[1] <- "GeneID"
+      colnames(tbl)[2] <- "Length"
+    }
+    tbl <- tbl[, c("GeneID", "Length")]
+    tbl$Length <- as.numeric(tbl$Length)
+    validate(need(nrow(tbl) > 0, "Gene length file appears to be empty."))
+    tbl
+  })
+  
+  # Load uploaded count data — supports featureCounts .rds OR plain count tables (.csv/.tsv/.txt)
   counts_data <- reactive({
-    req(input$rdsFile)
-    readRDS(input$rdsFile$datapath)
+    req(input$countsFile)
+    path <- input$countsFile$datapath
+    ext  <- tolower(tools::file_ext(input$countsFile$name))
+    
+    if (ext == "rds") {
+      # Original featureCounts RDS path — return as-is
+      obj <- readRDS(path)
+      # Validate it looks like a featureCounts object
+      validate(
+        need(!is.null(obj$counts),      "RDS file does not contain a $counts matrix."),
+        need(!is.null(obj$annotation),  "RDS file does not contain an $annotation data frame.")
+      )
+      return(obj)
+    }
+    
+    # --- Plain count table (.csv / .tsv / .txt) ---
+    sep <- if (ext == "csv") "," else "\t"
+    
+    mat <- read.delim(path, sep = sep, header = TRUE,
+                      row.names = 1, check.names = FALSE,
+                      stringsAsFactors = FALSE)
+    
+    # Coerce to integer matrix (count data must be integers for DESeq2)
+    mat <- as.matrix(mat)
+    mode(mat) <- "integer"
+    
+    validate(need(nrow(mat) > 0 && ncol(mat) > 0,
+                  "Count table appears to be empty. Check file format and delimiter."))
+    
+    # Build annotation data frame matching featureCounts structure.
+    # Merge in gene lengths if the user supplied a length table; otherwise NA.
+    annotation_df <- data.frame(
+      GeneID = rownames(mat),
+      stringsAsFactors = FALSE
+    )
+    
+    if (!is.null(input$geneLengthFile)) {
+      len_tbl <- gene_lengths_table()
+      annotation_df <- dplyr::left_join(annotation_df, len_tbl, by = "GeneID")
+      n_missing <- sum(is.na(annotation_df$Length))
+      if (n_missing > 0) {
+        showNotification(
+          paste0(n_missing, " gene(s) in the count table had no matching entry in the ",
+                 "gene length file and will have NA lengths."),
+          type = "warning", duration = 8
+        )
+      }
+    } else {
+      annotation_df$Length <- NA_real_
+    }
+    
+    list(counts = mat, annotation = annotation_df)
   })
   
   # Load uploaded sample metadata
@@ -488,7 +576,7 @@ server <- function(input, output, session) {
   
   # Tell UI when both files are ready
   output$inputsReady <- reactive({
-    !is.null(input$rdsFile) && !is.null(input$sampleInfoFile)
+    !is.null(input$countsFile) && !is.null(input$sampleInfoFile)
   })
   outputOptions(output, "inputsReady", suspendWhenHidden = FALSE)
   
@@ -538,10 +626,14 @@ server <- function(input, output, session) {
                       selected = head(input$groupOrder, 1))
   })
   
-  # Preview featureCounts input
+  # Preview count data input
   output$previewTable <- renderTable({
     counts <- counts_data()$counts
-    colnames(counts) <- sample_info()$SampleName
+    # For featureCounts RDS, columns are BAM paths — rename to sample names.
+    # For plain count tables, columns are already sample names; only rename if lengths match.
+    if (ncol(counts) == nrow(sample_info())) {
+      colnames(counts) <- sample_info()$SampleName
+    }
     head_df <- head(counts)
     head_df <- cbind(GeneID = rownames(head_df), head_df)
     head_df
@@ -593,7 +685,11 @@ server <- function(input, output, session) {
       
       # Proceed
       counts <- counts_data()$counts
-      colnames(counts) <- sample_info()$SampleName
+      # For featureCounts RDS, column names are BAM paths — rename to sample names.
+      # For plain count tables, columns are already sample names; only rename if lengths match.
+      if (ncol(counts) == nrow(sample_info())) {
+        colnames(counts) <- sample_info()$SampleName
+      }
       col_data <- sample_info()
       
       # set group levels
@@ -1016,13 +1112,16 @@ server <- function(input, output, session) {
       gene_lengths <- as.numeric(res_clean$gene_lengths)
       names(gene_lengths) <- res_clean$ENTREZID
       
+      # If lengths are unavailable (plain count table), set covariate to NULL
+      covariate_arg <- if (all(is.na(gene_lengths))) NULL else gene_lengths
+      
       # Read species code 
       sp <- isolate(goSpeciesCode())
       
       # Run GO enrichment analysis with goana
       go_results <- limma::goana(de = entrez_id_vector, species = sp, 
                                  universe = universe_entrez_ids, 
-                                 covariate = gene_lengths)
+                                 covariate = covariate_arg)
       
       incProgress(0.8)
       appendLog("GO analysis complete.")
@@ -2119,11 +2218,15 @@ server <- function(input, output, session) {
       gene_lengths_vec <- as.numeric(analysisResults()$res_entrez$gene_lengths)
       names(gene_lengths_vec) <- analysisResults()$res_entrez$ENTREZID
       
+      # If lengths are unavailable (plain count table), set covariate to NULL
+      cov_vec <- gene_lengths_vec[universe_entrez]
+      covariate_arg <- if (all(is.na(cov_vec))) NULL else cov_vec
+      
       validate(need(length(info$entrez) >= 2, "Fewer than 2 genes with Entrez IDs; cannot run GO."))
       
       go_res <- limma::goana(de = info$entrez, species = sp,
                              universe = universe_entrez,
-                             covariate = gene_lengths_vec[universe_entrez])
+                             covariate = covariate_arg)
       incProgress(0.9)
       
       output$cmpGOplot <- renderPlot({
