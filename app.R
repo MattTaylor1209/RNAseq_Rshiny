@@ -7,71 +7,184 @@
 #    https://shiny.posit.co/
 #
 
-# Required packages
+required_packages <- c("limma",
+                       
+                       "edgeR",
+                       
+                       "Glimma",
+                       
+                       "org.Dm.eg.db",
+                       
+                       "org.Mm.eg.db",
+                       
+                       "org.Rn.eg.db",
+                       
+                       "org.Hs.eg.db",
+                       
+                       "gplots",
+                       
+                       "RColorBrewer",
+                       
+                       "NMF",
+                       
+                       "BiasedUrn",
+                       
+                       "GO.db",
+                       
+                       "qusage",
+                       
+                       "Rsamtools",
+                       
+                       "Rsubread",
+                       
+                       "GenomicFeatures",
+                       
+                       "Rfastp",
+                       
+                       "biomaRt",
+                       
+                       "DESeq2",
+                       
+                       "IHW",
+                       
+                       "topGO",
+                       
+                       "apeglm",
+                       
+                       "clusterProfiler",
+                       
+                       "ashr",
+                       
+                       "goseq",
+                       
+                       "KEGGREST",
+                       
+                       "msigdbr",
+                       
+                       "GSEABase",
+                       
+                       "enrichplot",
+                       
+                       "gage",
+                       
+                       "gageData",
+                       
+                       "pathview",
+                       
+                       "sva",
+                       
+                       "RUVSeq",
+                       
+                       "vsn",
+                       
+                       "biomaRt",
+                       
+                       "DBI",
+                       
+                       "tidyverse",
+                       
+                       "readxl",
+                       
+                       "multcomp",
+                       
+                       "ggthemes",
+                       
+                       "ggpubr",
+                       
+                       "ggsignif",
+                       
+                       "ggrepel",
+                       
+                       "lsmeans",
+                       
+                       "rstatix",
+                       
+                       "ggtext",
+                       
+                       "RColorBrewer",
+                       
+                       "ggsci",
+                       
+                       "ggprism",
+                       
+                       "patchwork",
+                       
+                       "minpack.lm",
+                       
+                       "markdown",
+                       
+                       "treemap",
+                       
+                       "VennDiagram",
+                       
+                       "grid",
+                       
+                       "ggVennDiagram",
+                       
+                       "eulerr",
+                       
+                       "pheatmap",
+                       
+                       "plotly",
+                       
+                       "htmlwidgets",
+                       
+                       "shiny",
+                       
+                       "shinyFiles",
+                       
+                       "DT",
+                       
+                       "tidyr")
 
-library(apeglm)
-library(ashr)
-library(BiasedUrn)
-library(biomaRt)
-library(clusterProfiler)
-library(DBI)
-library(DESeq2)
-library(dplyr)
-library(DT)
-library(edgeR)
-library(enrichplot)
-library(eulerr)
-library(gage)
-library(gageData)
-library(GenomicFeatures)
-library(ggprism)
-library(ggpubr)
-library(ggrepel)
-library(ggsci)
-library(ggsignif)
-library(ggtext)
-library(ggthemes)
-library(ggVennDiagram)
-library(GO.db)
-library(goseq)
-library(gplots)
-library(grid)
-library(GSEABase)
-library(htmlwidgets)
-library(KEGGREST)
-library(limma)
-library(lsmeans)
-library(markdown)
-library(minpack.lm)
-library(msigdbr)
-library(multcomp)
-library(NMF)
-library(org.Dm.eg.db)
-library(org.Hs.eg.db)
-library(org.Mm.eg.db)
-library(org.Rn.eg.db)
-library(patchwork)
-library(pathview)
-library(pheatmap)
-library(plotly)
-library(qusage)
-library(RColorBrewer)
-library(readr)
-library(readxl)
-library(rstatix)
-library(Rsubread)
-library(shiny)
-library(shinyFiles)
-library(stats)
-library(sva)
-library(tidyr)
-library(tidyverse)
-library(treemap)
-library(utils)
-library(VennDiagram)
-library(viridisLite)
-library(vsn)
 
+
+# Install BiocManager if needed
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  
+  install.packages("BiocManager")
+  
+}
+
+
+# Try BiocManager first, then fallback to install.packages
+
+for (pkg in required_packages) {
+  
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    
+    message("Trying BiocManager::install('", pkg, "')")
+    
+    tryCatch({
+      
+      BiocManager::install(pkg, ask = FALSE, update = FALSE)
+      
+    }, error = function(e_bioc) {
+      
+      message("BiocManager failed. Trying install.packages('", pkg, "')")
+      
+      tryCatch({
+        
+        install.packages(pkg, dependencies = TRUE)
+        
+      }, error = function(e_cran) {
+        
+        message("Failed to install '", pkg, "' via both methods.")
+        
+      })
+      
+    })
+    
+  }
+  
+}
+
+
+# Packages loading
+
+
+invisible(lapply(required_packages, library, character.only = TRUE))
 
 
 
