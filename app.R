@@ -111,6 +111,7 @@ ui <- fluidPage(
       uiOutput("groupOrderUI"),
       uiOutput("contrastSelectUI"),
       uiOutput("flybaseCheckboxUI"),
+      checkboxInput("filterLncRNA", "Filter out lncRNAs (keep only protein-coding)", value = FALSE),
       actionButton("analyzeBtn", "Run Analysis"),
       conditionalPanel(
         condition = "output.inputsReady",
@@ -726,6 +727,38 @@ server <- function(input, output, session) {
           keep_idx <- !is.na(gene_symbols)
           dds <- dds[keep_idx, ]
           rownames(dds) <- gene_symbols[keep_idx]
+        }
+      }
+      
+      if (isTRUE(isolate(input$filterLncRNA))) {
+        appendLog("Filtering out lncRNAs (keeping protein-coding only)...")
+        showNotification("Filtering out lncRNAs...", type="message")
+        
+        # Determine the current ID format (Symbols or FlyBase IDs)
+        current_keytype <- if (orgdb_name == "org.Dm.eg.db" && isTRUE(isolate(input$convertFlybase))) {
+          "SYMBOL"
+        } else {
+          from_type
+        }
+        
+        # Map rownames to their Gene Type using the selected OrgDb
+        gene_types <- mapIds(
+          orgdb,
+          keys = rownames(dds),
+          column = "GENETYPE",
+          keytype = current_keytype,
+          multiVals = "first"
+        )
+        
+        # Keep ONLY genes explicitly annotated as protein-coding
+        keep_coding <- which(gene_types == "protein-coding")
+        
+        if (length(keep_coding) > 0) {
+          dds <- dds[keep_coding, ]
+          appendLog(paste("Kept", length(keep_coding), "protein-coding genes."))
+        } else {
+          appendLog("Warning: No protein-coding genes found. Skipping lncRNA filter.")
+          showNotification("Warning: No protein-coding genes found. Skipping filter.", type="warning")
         }
       }
       incProgress(0.1)
