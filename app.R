@@ -203,15 +203,17 @@ ui <- fluidPage(
                  conditionalPanel(
                    condition = "output.isPlainCountTable",
                    uiOutput("geneLengthStatusUI"),
+                   actionButton("fetchBiomartBtn", HTML("Fetch gene lengths from biomaRt<br><small>(check organism first)</small>"),
+                                icon = icon("download")),
+                   helpText("Fetches median transcript lengths per gene from Ensembl (requires internet)."),
                    fileInput("geneLengthFile",
-                             "Upload Gene Lengths (optional, .csv/.tsv/.txt — two columns: GeneID, Length)",
+                             "Or upload Gene Lengths (.csv/.tsv/.txt — two columns: GeneID, Length)",
                              accept = c(".csv", ".tsv", ".txt")),
-                   helpText("Providing gene lengths enables length-bias correction in GO analysis.",
-                            "The file should have a header row with columns named GeneID and Length (bp).",
-                            "If lengths were auto-detected from featureCounts, uploading here will override them.")
+                   helpText("Gene lengths enable length-bias correction in GO analysis.",
+                            "Uploaded file will override biomaRt-fetched or auto-detected lengths.")
                  ),
                  radioButtons("sampleInfoMode", "Sample info source:",
-                              choices = c("Upload file" = "upload", "Define groups manually" = "manual"),
+                              choices = c("Upload file" = "upload", "Define groups manually (must know column order)" = "manual"),
                               selected = "upload", inline = TRUE),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'upload'",
@@ -782,8 +784,8 @@ server <- function(input, output, session) {
   
   # Gene length status indicator
   output$geneLengthStatusUI <- renderUI({
-    req(counts_data())
-    lengths <- counts_data()$annotation$Length
+    req(counts_data_with_lengths())
+    lengths <- counts_data_with_lengths()$annotation$Length
     has_lengths <- !all(is.na(lengths))
     n_with <- sum(!is.na(lengths))
     n_total <- length(lengths)
@@ -803,9 +805,116 @@ server <- function(input, output, session) {
         tags$b("No gene lengths found in count file."),
         tags$br(),
         tags$small("GO analysis will run without length-bias correction.",
-                   "Upload a gene length file below, or use an RDS with featureCounts annotation.")
+                   "Fetch lengths via biomaRt or upload a gene length file.")
       )
     }
+  })
+  
+  # ---- biomaRt gene length fetching ----
+  biomartLengths <- reactiveVal(NULL)
+  
+  # Wrapper reactive: overlays biomaRt-fetched lengths onto counts_data() when
+  # the file itself has no lengths and no user-uploaded length file
+  counts_data_with_lengths <- reactive({
+    cd <- counts_data()
+    bm <- biomartLengths()
+    
+    # Only apply biomaRt lengths if the annotation currently has no lengths
+    # (user-uploaded file or featureCounts Length column take priority)
+    if (!is.null(bm) && all(is.na(cd$annotation$Length))) {
+      ann <- cd$annotation[, "GeneID", drop = FALSE]
+      ann <- dplyr::left_join(ann, bm, by = "GeneID")
+      # Fill any unmatched genes with NA
+      if (!"Length" %in% names(ann)) ann$Length <- NA_real_
+      cd$annotation <- ann
+    }
+    cd
+  })
+  
+  observeEvent(input$fetchBiomartBtn, {
+    req(counts_data())
+    
+    withProgress(message = "Connecting to Ensembl biomaRt...", value = 0, {
+      incProgress(0.05)
+      
+      # Map organism selection to biomaRt dataset
+      orgdb_name <- isolate(input$organism)
+      bm_dataset <- switch(orgdb_name,
+                           "org.Hs.eg.db" = "hsapiens_gene_ensembl",
+                           "org.Mm.eg.db" = "mmusculus_gene_ensembl",
+                           "org.Rn.eg.db" = "rnorvegicus_gene_ensembl",
+                           "org.Dm.eg.db" = "dmelanogaster_gene_ensembl"
+      )
+      
+      # Determine which biomaRt attribute matches the gene IDs in the count table
+      bm_gene_attr <- if (orgdb_name == "org.Dm.eg.db" && !isTRUE(isolate(input$convertFlybase))) {
+        "flybase_gene_id"
+      } else {
+        "external_gene_name"
+      }
+      
+      gene_ids <- unique(counts_data()$annotation$GeneID)
+      gene_ids <- gene_ids[!is.na(gene_ids) & nzchar(gene_ids)]
+      
+      tryCatch({
+        setProgress(value = 0.05, message = "Connecting to Ensembl...")
+        ensembl <- biomaRt::useEnsembl(biomart = "genes", dataset = bm_dataset)
+        
+        # --- Chunked query with progress updates ---
+        chunk_size <- 5000
+        chunks <- split(gene_ids, ceiling(seq_along(gene_ids) / chunk_size))
+        n_chunks <- length(chunks)
+        bm_results_list <- vector("list", n_chunks)
+        
+        for (i in seq_along(chunks)) {
+          setProgress(
+            value   = 0.1 + 0.8 * (i / n_chunks),
+            message = paste0("Querying Ensembl... batch ", i, "/", n_chunks,
+                             " (", length(chunks[[i]]), " genes)")
+          )
+          bm_results_list[[i]] <- biomaRt::getBM(
+            attributes = c(bm_gene_attr, "transcript_length"),
+            filters    = bm_gene_attr,
+            values     = chunks[[i]],
+            mart       = ensembl
+          )
+        }
+        
+        bm_results <- do.call(rbind, bm_results_list)
+        
+        setProgress(value = 0.92, message = "Computing median lengths per gene...")
+        
+        if (is.null(bm_results) || nrow(bm_results) == 0) {
+          showNotification("biomaRt returned no results. Check organism selection.",
+                           type = "error", duration = 8)
+          return()
+        }
+        
+        # Use median transcript length per gene as the length estimate
+        colnames(bm_results) <- c("GeneID", "transcript_length")
+        gene_lengths <- aggregate(transcript_length ~ GeneID, data = bm_results, FUN = median)
+        colnames(gene_lengths) <- c("GeneID", "Length")
+        gene_lengths$Length <- round(gene_lengths$Length)
+        
+        n_matched <- sum(gene_ids %in% gene_lengths$GeneID)
+        n_total   <- length(gene_ids)
+        
+        biomartLengths(gene_lengths)
+        
+        setProgress(value = 1, message = "Done!")
+        showNotification(
+          paste0("biomaRt: fetched lengths for ", nrow(gene_lengths),
+                 " genes (", n_matched, "/", n_total, " matched to count data)."),
+          type = "message", duration = 8
+        )
+        
+      }, error = function(e) {
+        showNotification(
+          paste0("biomaRt fetch failed: ", conditionMessage(e)),
+          type = "error", duration = 10
+        )
+      })
+    })
   })
   
   # ---- Manual group builder ----
@@ -999,7 +1108,7 @@ server <- function(input, output, session) {
       orgdb_name <- isolate(input$organism)
       orgdb <- isolate(get(orgdb_name))
       
-      fc <- counts_data()
+      fc <- counts_data_with_lengths()
       
       # Decide what your GeneID column represents
       from_type <- if (orgdb_name == "org.Dm.eg.db" && isTRUE(input$convertFlybase)) {
