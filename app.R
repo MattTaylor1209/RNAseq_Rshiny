@@ -209,7 +209,28 @@ ui <- fluidPage(
                             "The file should have a header row with columns named GeneID and Length (bp).",
                             "If omitted, GO will run without length correction.")
                  ),
-                 fileInput("sampleInfoFile", "Upload SampleInfo.txt", accept = c(".txt", ".tsv")),
+                 radioButtons("sampleInfoMode", "Sample info source:",
+                              choices = c("Upload file" = "upload", "Define groups manually" = "manual"),
+                              selected = "upload", inline = TRUE),
+                 conditionalPanel(
+                   condition = "input.sampleInfoMode == 'upload'",
+                   fileInput("sampleInfoFile", "Upload SampleInfo.txt", accept = c(".txt", ".tsv"))
+                 ),
+                 conditionalPanel(
+                   condition = "input.sampleInfoMode == 'manual'",
+                   textInput("manualGroupName", "Group name:", placeholder = "e.g. Control"),
+                   numericInput("manualGroupN", "Number of replicates (n):", value = 3, min = 1, step = 1),
+                   actionButton("addGroupBtn", "Add group", icon = icon("plus")),
+                   br(), br(),
+                   tableOutput("manualGroupsTable"),
+                   fluidRow(
+                     column(6, actionButton("clearGroupsBtn", "Clear all", icon = icon("trash"))),
+                     column(6, actionButton("confirmGroupsBtn", "Confirm groups", icon = icon("check"),
+                                            class = "btn-success"))
+                   ),
+                   br(),
+                   uiOutput("manualSampleCountMsg")
+                 ),
                  selectInput("organism", "Select organism:",
                              choices = c(
                                "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
@@ -757,15 +778,117 @@ server <- function(input, output, session) {
     list(counts = mat, annotation = annotation_df)
   })
   
-  # Load uploaded sample metadata
+  # ---- Manual group builder ----
+  manualGroups <- reactiveVal(data.frame(
+    Group = character(0), n = integer(0), stringsAsFactors = FALSE
+  ))
+  manualConfirmed <- reactiveVal(FALSE)
+  
+  observeEvent(input$addGroupBtn, {
+    req(input$manualGroupName)
+    gname <- trimws(input$manualGroupName)
+    if (nchar(gname) == 0) {
+      showNotification("Please enter a group name.", type = "error")
+      return()
+    }
+    current <- manualGroups()
+    if (gname %in% current$Group) {
+      showNotification(paste("Group", gname, "already added."), type = "warning")
+      return()
+    }
+    manualGroups(rbind(current, data.frame(Group = gname, n = input$manualGroupN,
+                                           stringsAsFactors = FALSE)))
+    manualConfirmed(FALSE)
+    updateTextInput(session, "manualGroupName", value = "")
+  })
+  
+  observeEvent(input$clearGroupsBtn, {
+    manualGroups(data.frame(Group = character(0), n = integer(0),
+                            stringsAsFactors = FALSE))
+    manualConfirmed(FALSE)
+  })
+  
+  observeEvent(input$confirmGroupsBtn, {
+    mg <- manualGroups()
+    if (nrow(mg) == 0) {
+      showNotification("Add at least one group first.", type = "error")
+      return()
+    }
+    total_n <- sum(mg$n)
+    n_cols <- tryCatch(ncol(counts_data()$counts), error = function(e) NA)
+    if (!is.na(n_cols) && total_n != n_cols) {
+      showNotification(
+        paste0("Total samples (", total_n, ") does not match the number of ",
+               "count columns (", n_cols, "). Please adjust."),
+        type = "error", duration = 8
+      )
+      return()
+    }
+    manualConfirmed(TRUE)
+    showNotification(paste0("Groups confirmed: ", total_n, " samples across ",
+                            nrow(mg), " group(s)."), type = "message")
+  })
+  
+  output$manualGroupsTable <- renderTable({
+    mg <- manualGroups()
+    if (nrow(mg) == 0) return(NULL)
+    # Show preview of sample names
+    mg$`Sample names` <- vapply(seq_len(nrow(mg)), function(i) {
+      paste0(mg$Group[i], seq_len(mg$n[i]), collapse = ", ")
+    }, character(1))
+    mg
+  })
+  
+  output$manualSampleCountMsg <- renderUI({
+    mg <- manualGroups()
+    if (nrow(mg) == 0) return(NULL)
+    total_n <- sum(mg$n)
+    n_cols <- tryCatch(ncol(counts_data()$counts), error = function(e) NA)
+    if (!is.na(n_cols)) {
+      col <- if (total_n == n_cols) "green" else "red"
+      tags$p(style = paste0("color:", col, "; font-weight:bold;"),
+             paste0("Total samples: ", total_n, " / ", n_cols, " count columns"))
+    } else {
+      tags$p(paste0("Total samples: ", total_n, " (upload count data to verify)"))
+    }
+  })
+  
+  # Build sample_info data frame from manual groups
+  manual_sample_info <- reactive({
+    req(manualConfirmed())
+    mg <- manualGroups()
+    req(nrow(mg) > 0)
+    
+    rows <- lapply(seq_len(nrow(mg)), function(i) {
+      data.frame(
+        SampleName = paste0(mg$Group[i], seq_len(mg$n[i])),
+        Group      = rep(mg$Group[i], mg$n[i]),
+        stringsAsFactors = TRUE
+      )
+    })
+    do.call(rbind, rows)
+  })
+  
+  # Unified sample_info reactive — works in both modes
   sample_info <- reactive({
-    req(input$sampleInfoFile)
-    read.delim(input$sampleInfoFile$datapath, stringsAsFactors = TRUE)
+    if (input$sampleInfoMode == "upload") {
+      req(input$sampleInfoFile)
+      read.delim(input$sampleInfoFile$datapath, stringsAsFactors = TRUE)
+    } else {
+      req(manualConfirmed())
+      manual_sample_info()
+    }
   })
   
   # Tell UI when both files are ready
   output$inputsReady <- reactive({
-    !is.null(input$countsFile) && !is.null(input$sampleInfoFile)
+    has_counts <- !is.null(input$countsFile)
+    has_info   <- if (input$sampleInfoMode == "upload") {
+      !is.null(input$sampleInfoFile)
+    } else {
+      isTRUE(manualConfirmed())
+    }
+    has_counts && has_info
   })
   outputOptions(output, "inputsReady", suspendWhenHidden = FALSE)
   
