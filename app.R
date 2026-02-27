@@ -210,7 +210,7 @@ ui <- fluidPage(
                             "If omitted, GO will run without length correction.")
                  ),
                  radioButtons("sampleInfoMode", "Sample info source:",
-                              choices = c("Upload file" = "upload", "Define groups manually" = "manual"),
+                              choices = c("Upload file" = "upload", "Define groups manually (note you must know column order!)" = "manual"),
                               selected = "upload", inline = TRUE),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'upload'",
