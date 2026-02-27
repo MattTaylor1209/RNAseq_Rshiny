@@ -1224,7 +1224,8 @@ server <- function(input, output, session) {
       geom_text_repel(aes(label = SampleName), size = input$labelsize,
                       box.padding = 1,      # Increases space around labels
                       point.padding = 1,    # Increases distance from points
-                      min.segment.length = 0) +  # Add sample labels
+                      min.segment.length = 0,
+                      segment.size = if (input$labelsize == 0) 0 else 0.5) +
       scale_shape_manual(values = c(21:25, 21:25)) + # Change this depending on how many shapes you want, 21-25 are decent
       guides(fill = guide_legend(override.aes = list(shape = 22))) +
       theme_minimal() +
