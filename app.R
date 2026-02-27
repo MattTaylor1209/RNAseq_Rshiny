@@ -202,15 +202,16 @@ ui <- fluidPage(
                            accept = c(".rds", ".csv", ".tsv", ".txt")),
                  conditionalPanel(
                    condition = "output.isPlainCountTable",
+                   uiOutput("geneLengthStatusUI"),
                    fileInput("geneLengthFile",
                              "Upload Gene Lengths (optional, .csv/.tsv/.txt — two columns: GeneID, Length)",
                              accept = c(".csv", ".tsv", ".txt")),
                    helpText("Providing gene lengths enables length-bias correction in GO analysis.",
                             "The file should have a header row with columns named GeneID and Length (bp).",
-                            "If omitted, GO will run without length correction.")
+                            "If lengths were auto-detected from featureCounts, uploading here will override them.")
                  ),
                  radioButtons("sampleInfoMode", "Sample info source:",
-                              choices = c("Upload file" = "upload", "Define groups manually (note you must know column order!)" = "manual"),
+                              choices = c("Upload file" = "upload", "Define groups manually" = "manual"),
                               selected = "upload", inline = TRUE),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'upload'",
@@ -718,16 +719,15 @@ server <- function(input, output, session) {
     
     # Log what was detected
     if (ncol(annot_cols) > 0) {
-      appendLog(paste0("Detected featureCounts text format. ",
-                       "Stripped ", ncol(annot_cols), " annotation column(s): ",
-                       paste(names(annot_cols), collapse = ", "), "."))
+      showNotification(paste0("Detected featureCounts text format. ",
+                              "Stripped ", ncol(annot_cols), " annotation column(s): ",
+                              paste(names(annot_cols), collapse = ", "), "."),
+                       type = "message", duration = 8)
     }
     
     # Handle duplicate gene IDs (can happen when -g gene_name is used)
     if (anyDuplicated(rownames(mat))) {
       n_dup <- sum(duplicated(rownames(mat)))
-      appendLog(paste0("Found ", n_dup, " duplicate gene ID(s). ",
-                       "Summing counts for duplicates."))
       showNotification(paste0(n_dup, " duplicate gene IDs found — summing counts."),
                        type = "warning", duration = 8)
       mat <- rowsum(mat, rownames(mat))
@@ -754,7 +754,8 @@ server <- function(input, output, session) {
         annotation_df$Length <- len_vec
       }
       fc_length_extracted <- TRUE
-      appendLog("Extracted gene lengths from featureCounts 'Length' column.")
+      showNotification("Extracted gene lengths from featureCounts 'Length' column.",
+                       type = "message", duration = 6)
     }
     
     # If user uploaded a separate gene-length file, it takes priority
@@ -773,9 +774,38 @@ server <- function(input, output, session) {
       }
     } else if (!fc_length_extracted) {
       annotation_df$Length <- NA_real_
+      # Note: gene length status is shown via geneLengthStatusUI in the sidebar
     }
     
     list(counts = mat, annotation = annotation_df)
+  })
+  
+  # Gene length status indicator
+  output$geneLengthStatusUI <- renderUI({
+    req(counts_data())
+    lengths <- counts_data()$annotation$Length
+    has_lengths <- !all(is.na(lengths))
+    n_with <- sum(!is.na(lengths))
+    n_total <- length(lengths)
+    
+    if (has_lengths) {
+      tags$div(
+        style = "padding: 6px 10px; margin-bottom: 8px; border-radius: 4px; background-color: #d4edda; border: 1px solid #c3e6cb;",
+        icon("check-circle", style = "color: #28a745;"),
+        tags$b(paste0("Gene lengths detected: ", n_with, "/", n_total, " genes.")),
+        tags$br(),
+        tags$small("Length-bias correction will be applied in GO analysis.")
+      )
+    } else {
+      tags$div(
+        style = "padding: 6px 10px; margin-bottom: 8px; border-radius: 4px; background-color: #fff3cd; border: 1px solid #ffc107;",
+        icon("exclamation-triangle", style = "color: #856404;"),
+        tags$b("No gene lengths found in count file."),
+        tags$br(),
+        tags$small("GO analysis will run without length-bias correction.",
+                   "Upload a gene length file below, or use an RDS with featureCounts annotation.")
+      )
+    }
   })
   
   # ---- Manual group builder ----
@@ -1458,6 +1488,14 @@ server <- function(input, output, session) {
       
       # If lengths are unavailable (plain count table), set covariate to NULL
       covariate_arg <- if (all(is.na(gene_lengths))) NULL else gene_lengths
+      
+      if (is.null(covariate_arg)) {
+        appendLog("Note: Gene lengths not available — GO running without length-bias correction.")
+        showNotification("GO running without length-bias correction (no gene lengths available).",
+                         type = "warning", duration = 6)
+      } else {
+        appendLog("Gene lengths available — applying length-bias correction in GO.")
+      }
       
       # Read species code 
       sp <- isolate(goSpeciesCode())
@@ -2565,6 +2603,11 @@ server <- function(input, output, session) {
       # If lengths are unavailable (plain count table), set covariate to NULL
       cov_vec <- gene_lengths_vec[universe_entrez]
       covariate_arg <- if (all(is.na(cov_vec))) NULL else cov_vec
+      
+      if (is.null(covariate_arg)) {
+        showNotification("GO running without length-bias correction (no gene lengths available).",
+                         type = "warning", duration = 6)
+      }
       
       validate(need(length(info$entrez) >= 2, "Fewer than 2 genes with Entrez IDs; cannot run GO."))
       
