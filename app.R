@@ -198,54 +198,54 @@ ui <- fluidPage(
   
   sidebarLayout(
     sidebarPanel(width = 3,
-      fileInput("countsFile", "Upload Count Data (.rds, .csv, .tsv, .txt)",
-                accept = c(".rds", ".csv", ".tsv", ".txt")),
-      conditionalPanel(
-        condition = "output.isPlainCountTable",
-        fileInput("geneLengthFile",
-                  "Upload Gene Lengths (optional, .csv/.tsv/.txt — two columns: GeneID, Length)",
-                  accept = c(".csv", ".tsv", ".txt")),
-        helpText("Providing gene lengths enables length-bias correction in GO analysis.",
-                 "The file should have a header row with columns named GeneID and Length (bp).",
-                 "If omitted, GO will run without length correction.")
-      ),
-      fileInput("sampleInfoFile", "Upload SampleInfo.txt", accept = c(".txt", ".tsv")),
-      selectInput("organism", "Select organism:",
-                  choices = c(
-                    "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
-                    "Mouse (Mus musculus)" = "org.Mm.eg.db",
-                    "Human (Homo sapiens)" = "org.Hs.eg.db",
-                    "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db"
-                  ),
-                  selected = "org.Dm.eg.db"
-      ),
-      numericInput("lfcThreshold", "log2 Fold Change threshold", value = 0.5, min = 0),
-      numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
-      uiOutput("groupOrderUI"),
-      uiOutput("contrastSelectUI"),
-      uiOutput("flybaseCheckboxUI"),
-      checkboxInput("filterLncRNA", "Filter out lncRNAs (keep only protein-coding)", value = FALSE),
-      actionButton("analyzeBtn", "Run Analysis"),
-      conditionalPanel(
-        condition = "output.inputsReady",
-        checkboxInput("viewPreview", "Preview input files", value = TRUE)
-      ),
-      conditionalPanel(
-        condition = "output.analysisReady",
-        downloadButton("dl_res", "Download DE table")
-      ),
-      tags$hr(),
-      h4("GSEA"),
-      selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
-      selectInput("gseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
-      numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
-      numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
-      numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
-      numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
-      actionButton("runGSEA", "Run GSEA"),
-      tags$hr(),
-      h4("GO"),
-      actionButton("runGO", "Run GO")
+                 fileInput("countsFile", "Upload Count Data (.rds, .csv, .tsv, .txt)",
+                           accept = c(".rds", ".csv", ".tsv", ".txt")),
+                 conditionalPanel(
+                   condition = "output.isPlainCountTable",
+                   fileInput("geneLengthFile",
+                             "Upload Gene Lengths (optional, .csv/.tsv/.txt — two columns: GeneID, Length)",
+                             accept = c(".csv", ".tsv", ".txt")),
+                   helpText("Providing gene lengths enables length-bias correction in GO analysis.",
+                            "The file should have a header row with columns named GeneID and Length (bp).",
+                            "If omitted, GO will run without length correction.")
+                 ),
+                 fileInput("sampleInfoFile", "Upload SampleInfo.txt", accept = c(".txt", ".tsv")),
+                 selectInput("organism", "Select organism:",
+                             choices = c(
+                               "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
+                               "Mouse (Mus musculus)" = "org.Mm.eg.db",
+                               "Human (Homo sapiens)" = "org.Hs.eg.db",
+                               "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db"
+                             ),
+                             selected = "org.Dm.eg.db"
+                 ),
+                 numericInput("lfcThreshold", "log2 Fold Change threshold", value = 0.5, min = 0),
+                 numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
+                 uiOutput("groupOrderUI"),
+                 uiOutput("contrastSelectUI"),
+                 uiOutput("flybaseCheckboxUI"),
+                 checkboxInput("filterLncRNA", "Filter out lncRNAs (keep only protein-coding)", value = FALSE),
+                 actionButton("analyzeBtn", "Run Analysis"),
+                 conditionalPanel(
+                   condition = "output.inputsReady",
+                   checkboxInput("viewPreview", "Preview input files", value = TRUE)
+                 ),
+                 conditionalPanel(
+                   condition = "output.analysisReady",
+                   downloadButton("dl_res", "Download DE table")
+                 ),
+                 tags$hr(),
+                 h4("GSEA"),
+                 selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                 selectInput("gseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
+                 numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
+                 numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
+                 numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
+                 numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
+                 actionButton("runGSEA", "Run GSEA"),
+                 tags$hr(),
+                 h4("GO"),
+                 actionButton("runGO", "Run GO")
     ),
     
     mainPanel(
@@ -550,12 +550,12 @@ ui <- fluidPage(
                                         tabPanel("GAGE / Pathview",
                                                  fluidRow(
                                                    
-                                                          h5("Upregulated pathways"),
-                                                          DT::dataTableOutput("cmpGageUpTable")
+                                                   h5("Upregulated pathways"),
+                                                   DT::dataTableOutput("cmpGageUpTable")
                                                  ),
                                                  fluidRow(
-                                                          h5("Downregulated pathways"),
-                                                          DT::dataTableOutput("cmpGageDownTable")
+                                                   h5("Downregulated pathways"),
+                                                   DT::dataTableOutput("cmpGageDownTable")
                                                    
                                                  ),
                                                  hr(),
@@ -643,29 +643,104 @@ server <- function(input, output, session) {
       return(obj)
     }
     
-    # --- Plain count table (.csv / .tsv / .txt) ---
+    # --- Plain count table or featureCounts text output (.csv / .tsv / .txt) ---
     sep <- if (ext == "csv") "," else "\t"
     
-    mat <- read.delim(path, sep = sep, header = TRUE,
-                      row.names = 1, check.names = FALSE,
+    # Read the full table, skipping comment lines (featureCounts text output
+    # starts with a '# Program:featureCounts ...' header line).
+    raw <- read.delim(path, sep = sep, header = TRUE,
+                      comment.char = "#", check.names = FALSE,
                       stringsAsFactors = FALSE)
     
-    # Coerce to integer matrix (count data must be integers for DESeq2)
-    mat <- as.matrix(mat)
-    mode(mat) <- "integer"
-    
-    validate(need(nrow(mat) > 0 && ncol(mat) > 0,
+    validate(need(nrow(raw) > 0 && ncol(raw) > 0,
                   "Count table appears to be empty. Check file format and delimiter."))
     
-    # Build annotation data frame matching featureCounts structure.
-    # Merge in gene lengths if the user supplied a length table; otherwise NA.
+    # --- Detect featureCounts text output ---
+    # The standard featureCounts summary has columns:
+    #   Geneid, Chr, Start, End, Strand, Length, <sample1>, <sample2>, ...
+    # With --extraAttributes it may also include gene_id, gene_type, etc.
+    # In all cases the first column is 'Geneid' and there are non-numeric
+    # annotation columns before the integer count columns.
+    #
+    # Strategy: identify which columns are numeric (counts) vs character
+    # (annotation metadata) and split them apart.
+    
+    # Known featureCounts annotation column names (case-insensitive match)
+    fc_annot_names <- c("geneid", "chr", "start", "end", "strand", "length",
+                        "gene_id", "gene_type", "gene_name", "gene_biotype")
+    
+    # Use the first column as gene IDs regardless of its name
+    gene_ids <- raw[[1]]
+    
+    # Classify remaining columns as annotation (character/non-numeric) or count (numeric)
+    remaining <- raw[, -1, drop = FALSE]
+    
+    is_count_col <- vapply(remaining, function(col) {
+      # A count column should be coercible to integer with no (or very few) NAs
+      suppressWarnings({
+        nums <- as.numeric(col)
+      })
+      # If >90% parse as finite numbers, treat as a count column
+      sum(is.finite(nums)) / length(nums) > 0.9
+    }, logical(1))
+    
+    annot_cols <- remaining[, !is_count_col, drop = FALSE]
+    count_cols <- remaining[,  is_count_col, drop = FALSE]
+    
+    validate(need(ncol(count_cols) > 0,
+                  "No numeric count columns detected. Check file format."))
+    
+    # Build the count matrix
+    mat <- as.matrix(count_cols)
+    mode(mat) <- "integer"
+    rownames(mat) <- gene_ids
+    
+    # Log what was detected
+    if (ncol(annot_cols) > 0) {
+      appendLog(paste0("Detected featureCounts text format. ",
+                       "Stripped ", ncol(annot_cols), " annotation column(s): ",
+                       paste(names(annot_cols), collapse = ", "), "."))
+    }
+    
+    # Handle duplicate gene IDs (can happen when -g gene_name is used)
+    if (anyDuplicated(rownames(mat))) {
+      n_dup <- sum(duplicated(rownames(mat)))
+      appendLog(paste0("Found ", n_dup, " duplicate gene ID(s). ",
+                       "Summing counts for duplicates."))
+      showNotification(paste0(n_dup, " duplicate gene IDs found — summing counts."),
+                       type = "warning", duration = 8)
+      mat <- rowsum(mat, rownames(mat))
+      gene_ids <- rownames(mat)
+    }
+    
+    # --- Build annotation data frame ---
     annotation_df <- data.frame(
       GeneID = rownames(mat),
       stringsAsFactors = FALSE
     )
     
+    # Extract gene length from the featureCounts 'Length' column if present
+    fc_length_extracted <- FALSE
+    if ("Length" %in% names(annot_cols)) {
+      len_vec <- as.numeric(annot_cols$Length)
+      # If there were duplicate gene IDs, average the lengths per unique ID
+      if (length(len_vec) != nrow(annotation_df)) {
+        len_df <- data.frame(GeneID = gene_ids, Length = len_vec,
+                             stringsAsFactors = FALSE)
+        len_df <- aggregate(Length ~ GeneID, data = len_df, FUN = mean, na.rm = TRUE)
+        annotation_df <- dplyr::left_join(annotation_df, len_df, by = "GeneID")
+      } else {
+        annotation_df$Length <- len_vec
+      }
+      fc_length_extracted <- TRUE
+      appendLog("Extracted gene lengths from featureCounts 'Length' column.")
+    }
+    
+    # If user uploaded a separate gene-length file, it takes priority
     if (!is.null(input$geneLengthFile)) {
       len_tbl <- gene_lengths_table()
+      # Drop any existing Length column to replace with the user-supplied one
+      annotation_df$Length <- NULL
       annotation_df <- dplyr::left_join(annotation_df, len_tbl, by = "GeneID")
       n_missing <- sum(is.na(annotation_df$Length))
       if (n_missing > 0) {
@@ -675,7 +750,7 @@ server <- function(input, output, session) {
           type = "warning", duration = 8
         )
       }
-    } else {
+    } else if (!fc_length_extracted) {
       annotation_df$Length <- NA_real_
     }
     
