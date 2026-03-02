@@ -1508,14 +1508,12 @@ server <- function(input, output, session) {
       
     }
     
-    # Create annotation colors - handle cases with <3 groups
+    # Create annotation colors - handle any number of groups
     n_groups <- length(unique(sample_annotation$Group))
-    if (n_groups == 1) {
-      group_colors <- "#66C2A5"  # Single color
-    } else if (n_groups == 2) {
-      group_colors <- c("#66C2A5", "#FC8D62")  # Two colors from Set2
+    if (n_groups <= 8) {
+      group_colors <- RColorBrewer::brewer.pal(max(n_groups, 3), "Set2")[seq_len(n_groups)]
     } else {
-      group_colors <- RColorBrewer::brewer.pal(min(n_groups, 8), "Set2")
+      group_colors <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_groups)
     }
     names(group_colors) <- unique(sample_annotation$Group)
     annotation_colors <- list(Group = group_colors)
@@ -1946,10 +1944,10 @@ server <- function(input, output, session) {
       row.names = colnames(hm_mat)
     )
     n_groups <- length(unique(sample_annotation$Group))
-    group_colors <- if (n_groups <= 2) {
-      c("#66C2A5", "#FC8D62")[seq_len(n_groups)]
+    if (n_groups <= 8) {
+      group_colors <- RColorBrewer::brewer.pal(max(n_groups, 3), "Set2")[seq_len(n_groups)]
     } else {
-      RColorBrewer::brewer.pal(min(n_groups, 8), "Set2")
+      group_colors <- colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n_groups)
     }
     names(group_colors) <- unique(sample_annotation$Group)
     
