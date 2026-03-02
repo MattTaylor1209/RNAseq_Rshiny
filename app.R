@@ -257,19 +257,8 @@ ui <- fluidPage(
                  conditionalPanel(
                    condition = "output.analysisReady",
                    downloadButton("dl_res", "Download DE table")
-                 ),
-                 tags$hr(),
-                 h4("GSEA"),
-                 selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
-                 selectInput("gseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
-                 numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
-                 numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
-                 numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
-                 numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
-                 actionButton("runGSEA", "Run GSEA"),
-                 tags$hr(),
-                 h4("GO"),
-                 actionButton("runGO", "Run GO")
+                 )
+                 
     ),
     
     mainPanel(
@@ -362,13 +351,27 @@ ui <- fluidPage(
                    plotOutput("heatmapPlot", height = "600px")
           ),
           tabPanel("GSEA",
-                   plotOutput("gseaDotplot"),
-                   selectizeInput("gseaTerm", "Show enrichment plot for:", choices = NULL, multiple = FALSE),
-                   plotOutput("gseaEnrichPlot"),
-                   DT::dataTableOutput("gseaTable"),
-                   downloadButton("dl_gsea", "Download GSEA table")
+                   fluidRow(
+                     column(4, 
+                            selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                            selectInput("gseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
+                            numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
+                            numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
+                            numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
+                            numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
+                            actionButton("runGSEA", "Run GSEA"),),
+                     column(8,
+                            plotOutput("gseaDotplot"),
+                            selectizeInput("gseaTerm", "Show enrichment plot for:", choices = NULL, multiple = FALSE),
+                            plotOutput("gseaEnrichPlot"),
+                            DT::dataTableOutput("gseaTable"),
+                            downloadButton("dl_gsea", "Download GSEA table")
+                     )
+                   )
+                   
           ),
           tabPanel("GO",
+                   actionButton("runGO", "Run GO"),
                    selectInput("GOontology", "Ontology", c("BP","MF","CC"), selected = "BP"),
                    numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1),
                    plotOutput("GOBarplot")
@@ -1636,7 +1639,7 @@ server <- function(input, output, session) {
     ggplot(data = topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
       geom_bar(stat = "identity") +
       coord_flip() +
-      theme_minimal() +
+      theme_minimal(base_size = 13) +
       labs(x = "GO Terms", y = "-log10(p-value)", title = paste("Top GO Terms", 
                                                                 isolate(input$GOontology), sep = ": ")
       )
