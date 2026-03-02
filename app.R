@@ -442,6 +442,9 @@ ui <- fluidPage(
                           sliderInput("volcaxistextsize", "Axis text size", min = 0, max = 20, step = 0.5, 
                                       value = 12)
                    ),
+                   column(3,
+                          checkboxInput("pvalueselect", "Use adjusted p-value?", value = TRUE)
+                   ),
                    plotOutput("standardvolcanoplot",
                               width = "90%", height = "500px")
                    
@@ -2180,52 +2183,85 @@ server <- function(input, output, session) {
     res <- analysisResults()$res
     res_df <- as.data.frame(res)
     
+    # Basic sanity checks (DESeq2 results should have these)
+    validate(
+      need("log2FoldChange" %in% names(res_df), "Missing log2FoldChange in results."),
+      need("padj" %in% names(res_df), "Missing padj in results."),
+      need("pvalue" %in% names(res_df), "Missing pvalue in results.")
+    )
+    
+    # Precompute -log10 metrics (avoid doing this inside aes)
     res_df$log10padj <- -log10(res_df$padj)
+    res_df$log10p    <- -log10(res_df$pvalue)
+    
+    # Replace Inf (e.g. pvalue = 0) with NA so ggplot doesn't choke
     res_df$log10padj[is.infinite(res_df$log10padj)] <- NA
+    res_df$log10p[is.infinite(res_df$log10p)] <- NA
     
+    # Decide which p column is active
+    use_padj <- isTRUE(input$pvalueselect)  # TRUE -> use padj; FALSE -> use pvalue
+    p_col    <- if (use_padj) "padj" else "pvalue"
+    y_col    <- if (use_padj) "log10padj" else "log10p"
+    y_lab    <- if (use_padj) "-Log10 Adjusted P-value" else "-Log10 P-value"
     
-    # Thresholding
+    # Thresholds
     lfc_cutoff <- input$lfcThreshold
-    padj_cutoff <- input$padjThreshold
+    p_cutoff   <- input$padjThreshold  # keep your existing input name as the cutoff value
     
+    # Significance (based on chosen p metric)
     res_df$significance <- "Not significant"
-    res_df$significance[res_df$padj < padj_cutoff & res_df$log2FoldChange >= lfc_cutoff] <- "Upregulated"
-    res_df$significance[res_df$padj < padj_cutoff & res_df$log2FoldChange <= -lfc_cutoff] <- "Downregulated"
+    sig_ok <- !is.na(res_df[[p_col]]) & (res_df[[p_col]] < p_cutoff)
     
-    # Set levels so even missing categories are recognized
-    res_df$significance <- factor(res_df$significance,
-                                  levels = c("Downregulated", "Not significant", "Upregulated"))
+    res_df$significance[sig_ok & res_df$log2FoldChange >=  lfc_cutoff] <- "Upregulated"
+    res_df$significance[sig_ok & res_df$log2FoldChange <= -lfc_cutoff] <- "Downregulated"
     
-    # Label for top genes
-    # Select the top n most significant genes based on padj
-    top_genes <- rownames(res_df[order(res_df$padj), ])[1:input$topgenes]
+    res_df$significance <- factor(
+      res_df$significance,
+      levels = c("Downregulated", "Not significant", "Upregulated")
+    )
     
-    # Add a 'label' column to label only the top n genes
+    # Label top genes by chosen p metric (and avoid NA ordering issues)
+    n_top <- input$topgenes
+    ord <- order(res_df[[p_col]], na.last = NA) # removes NA p-values from ranking
+    top_genes <- rownames(res_df)[head(ord, n_top)]
     res_df$label <- ifelse(rownames(res_df) %in% top_genes, rownames(res_df), NA)
     
     volcano_colors <- c(
-      "Downregulated" = "blue",
+      "Downregulated"   = "blue",
       "Not significant" = "grey",
-      "Upregulated" = "red"
+      "Upregulated"     = "red"
     )
     
-    volcano_data <- res_df
-    volcano_data$Gene <- rownames(volcano_data)
-    
-    ggplot(as.data.frame(res_df), aes(x = log2FoldChange, y = -log10(padj))) +
+    ggplot(res_df, aes(x = log2FoldChange, y = .data[[y_col]])) +
       geom_point(aes(color = significance), size = input$volcpointsize) +
-      scale_color_manual(values = volcano_colors) +  
+      scale_color_manual(values = volcano_colors) +
       theme_minimal() +
       theme(
         legend.title = element_text(face = "bold", size = input$volclegendtitlesize),
-        legend.text = element_text(size = input$volclegendtextsize),
-        axis.text = element_text(face = "bold", size = input$volcaxistextsize),
-        axis.title = element_text(face = "bold", size = input$volcaxistitlesize)
-      )+
-      labs(title = "Volcano Plot", x = "Log2 Fold Change", y = "-Log10 Adjusted P-value") +
-      geom_hline(yintercept = -log10(padj_cutoff), linetype = "dashed", color = "black") +  # Horizontal line at p-value threshold
-      geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", color = "black") +  # Vertical lines at LFC = -1 and 1
-      geom_text_repel(aes(label = label), size = input$volclabelsize, max.overlaps = 10)  # Add gene labels
+        legend.text  = element_text(size = input$volclegendtextsize),
+        axis.text    = element_text(face = "bold", size = input$volcaxistextsize),
+        axis.title   = element_text(face = "bold", size = input$volcaxistitlesize)
+      ) +
+      labs(
+        title = "Volcano Plot",
+        x = "Log2 Fold Change",
+        y = y_lab
+      ) +
+      geom_hline(
+        yintercept = -log10(p_cutoff),
+        linetype = "dashed",
+        color = "black"
+      ) +
+      geom_vline(
+        xintercept = c(-lfc_cutoff, lfc_cutoff),
+        linetype = "dashed",
+        color = "black"
+      ) +
+      ggrepel::geom_text_repel(
+        aes(label = label),
+        size = input$volclabelsize,
+        max.overlaps = 10
+      )
   }, res = 96)
   
   output$dl_res <- downloadHandler(
