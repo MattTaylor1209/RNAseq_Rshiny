@@ -137,7 +137,9 @@ required_packages <- c("limma",
                        
                        "DT",
                        
-                       "tidyr")
+                       "tidyr",
+                       
+                       "viridisLite")
 
 
 
