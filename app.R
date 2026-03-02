@@ -248,6 +248,8 @@ ui <- fluidPage(
                  ),
                  numericInput("lfcThreshold", "log2 Fold Change threshold", value = 0.5, min = 0),
                  numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
+                 checkboxInput("filterlow", "Automatically filter low-expression genes?", value = TRUE),
+                 checkboxInput("deseqfilter", "Use DESeq2 independent filtering?", value = TRUE),
                  uiOutput("groupOrderUI"),
                  uiOutput("contrastSelectUI"),
                  uiOutput("convertToSymbolUI"),
@@ -1311,12 +1313,17 @@ server <- function(input, output, session) {
       }
       incProgress(0.1)
       
-      # filter our low counts
-      appendLog("Filtering low-expression genes...")
-      showNotification("Filtering low-expression genes...", type="message")
-      keep <- edgeR::filterByExpr(counts(dds), group = dds$Group)
+      filt <- isTRUE(input$filterlow)
       
-      dds <- dds[keep,]
+      if (filt) {
+        # filter our low counts
+        appendLog("Filtering low-expression genes...")
+        showNotification("Filtering low-expression genes...", type="message")
+        keep <- edgeR::filterByExpr(counts(dds), group = dds$Group)
+        
+        dds <- dds[keep,]
+      }
+      
       incProgress(0.1)
       
       appendLog("Running DESeq()...")
@@ -1327,9 +1334,16 @@ server <- function(input, output, session) {
       
       appendLog("Getting results...")
       showNotification("Getting results...", type="message")
-      res <- results(dds, lfcThreshold = isolate(input$lfcThreshold), alpha =
-                       isolate(input$padjThreshold), 
-                     contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator)))
+      
+      res <- results(
+        dds,
+        lfcThreshold = isolate(input$lfcThreshold),
+        alpha = isolate(input$padjThreshold),
+        independentFiltering = isolate(input$deseqfilter),
+        contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator))
+      )
+      
+      message("filterThreshold = ", metadata(res)$filterThreshold)
       
       # Match your UI thresholds in the summary
       sum_txt <- paste(
