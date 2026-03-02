@@ -1828,15 +1828,24 @@ server <- function(input, output, session) {
         gr <- gageRes()
         sp <- gr$species
         
-        # Get gene members of this KEGG pathway and convert to Entrez IDs
         tryCatch({
-          # keggConv maps KEGG gene IDs → NCBI Entrez IDs for this pathway
-          # Returns named vector: names = "dme:Dmel_CG1234", values = "ncbi-geneid:38864"
-          conv <- KEGGREST::keggConv("ncbi-geneid", term_id)
-          kegg_entrez <- sub("^ncbi-geneid:", "", conv)
-          kegg_entrez <- unique(kegg_entrez[nzchar(kegg_entrez)])
+          kegg_entrez <- character(0)
           
-          matched <- res_entrez[res_entrez$ENTREZID %in% kegg_entrez, ]
+          # Use the same kegg.gsets that GAGE used — guaranteed Entrez IDs
+          kg <- gage::kegg.gsets(species = sp, id.type = "entrez", check.new = FALSE)
+          matching_idx <- grep(paste0("^", term_id), names(kg$kg.sets))
+          
+          if (length(matching_idx) > 0) {
+            kegg_entrez <- unique(kg$kg.sets[[matching_idx[1]]])
+          }
+          
+          kegg_entrez <- kegg_entrez[!is.na(kegg_entrez) & nzchar(kegg_entrez)]
+          
+          # Force both to character for safe matching
+          kegg_entrez_chr <- as.character(kegg_entrez)
+          entrez_col_chr  <- as.character(res_entrez$ENTREZID)
+          
+          matched <- res_entrez[entrez_col_chr %in% kegg_entrez_chr, ]
           gene_symbols <- unique(matched$GeneIDs)
           
           # Label
