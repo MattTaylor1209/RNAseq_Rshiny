@@ -371,10 +371,18 @@ ui <- fluidPage(
                    
           ),
           tabPanel("GO",
-                   actionButton("runGO", "Run GO"),
-                   selectInput("GOontology", "Ontology", c("BP","MF","CC"), selected = "BP"),
-                   numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1),
-                   plotOutput("GOBarplot")
+                   fluidRow(
+                     column(4,
+                            actionButton("runGO", "Run GO"),
+                            selectInput("GOontology", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                            numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1)
+                     ),
+                     column(8,
+                            plotOutput("GOBarplot"),
+                            DT::dataTableOutput("goTable"),
+                            downloadButton("dl_go", "Download GO table")
+                     )
+                   )
           ),
           tabPanel("GAGE (KEGG)",
                    fluidRow(
@@ -440,6 +448,59 @@ ui <- fluidPage(
           ),
           tabPanel("Interactive Volcano Plot", plotlyOutput("volcanoPlot"),
                    plotOutput("geneBoxplot")),
+          
+          # ---- Explore Gene Sets Tab ----
+          tabPanel("Explore Gene Sets",
+                   fluidRow(
+                     column(12,
+                            h4("Explore Genes in a GO / GSEA / KEGG Term"),
+                            p("Select a term from a completed analysis, then view its genes as a heatmap, boxplots, or highlighted on a volcano plot.")
+                     )
+                   ),
+                   hr(),
+                   fluidRow(
+                     column(4,
+                            selectInput("exploreSource", "Source analysis:",
+                                        choices = c("GO" = "go", "GSEA" = "gsea", "KEGG (GAGE)" = "kegg")),
+                            uiOutput("exploreTermUI"),
+                            actionButton("loadTermGenesBtn", "Load genes for this term",
+                                         icon = icon("search")),
+                            br(), br(),
+                            uiOutput("exploreGeneCountMsg"),
+                            hr(),
+                            h5("Heatmap options"),
+                            selectInput("exploreHeatScale", "Scale:",
+                                        choices = c("Row (gene)" = "row", "Column (sample)" = "column", "None" = "none"),
+                                        selected = "row"),
+                            selectInput("exploreHeatColor", "Color scheme:",
+                                        choices = c("Blue-White-Red" = "RdBu", "Viridis" = "viridis"),
+                                        selected = "RdBu"),
+                            hr(),
+                            h5("Volcano options"),
+                            sliderInput("exploreVolcLabelSize", "Label size", 1, 8, 3, step = 0.5),
+                            sliderInput("exploreVolcPtSize", "Point size", 0.5, 6, 2, step = 0.5),
+                            sliderInput("exploreVolcAlpha", "Background point opacity", 0.01, 1, 0.1, step = 0.01)
+                     ),
+                     column(8,
+                            tabsetPanel(id = "exploreSubTabs",
+                                        tabPanel("Gene Table",
+                                                 DT::dataTableOutput("exploreGeneTable"),
+                                                 downloadButton("dl_explore_genes", "Download gene list")
+                                        ),
+                                        tabPanel("Heatmap",
+                                                 plotOutput("exploreHeatmap", height = "550px")
+                                        ),
+                                        tabPanel("Boxplots",
+                                                 uiOutput("exploreBoxplotGeneUI"),
+                                                 plotOutput("exploreBoxplot", height = "400px")
+                                        ),
+                                        tabPanel("Volcano",
+                                                 plotOutput("exploreVolcano", height = "500px")
+                                        )
+                            )
+                     )
+                   )
+          ),
           
           # ---- Compare Contrasts Tab ----
           tabPanel("Compare Contrasts",
@@ -1644,6 +1705,352 @@ server <- function(input, output, session) {
                                                                 isolate(input$GOontology), sep = ": ")
       )
   })
+  
+  output$goTable <- DT::renderDataTable({
+    req(goResults(), input$GOontology)
+    go_results <- goResults()$go_results
+    topgo <- limma::topGO(go_results, ontology = input$GOontology, number = input$GOnumber)
+    topgo$GOID <- rownames(topgo)
+    topgo <- topgo[, c("GOID", setdiff(names(topgo), "GOID"))]
+    DT::datatable(topgo, options = list(pageLength = 10, scrollX = TRUE),
+                  rownames = FALSE)
+  })
+  
+  output$dl_go <- downloadHandler(
+    filename = function() paste0("GO_", input$GOontology, "_results.csv"),
+    content  = function(f) {
+      go_results <- goResults()$go_results
+      topgo <- limma::topGO(go_results, ontology = input$GOontology, number = input$GOnumber)
+      topgo$GOID <- rownames(topgo)
+      readr::write_csv(topgo, f)
+    }
+  )
+  
+  # ============================================================
+  # EXPLORE GENE SETS – server logic
+  # ============================================================
+  
+  exploreGenes <- reactiveVal(NULL)  # data.frame with at least GeneSymbol column
+  exploreTermLabel <- reactiveVal("")
+  
+  # --- Dynamic term selector ---
+  output$exploreTermUI <- renderUI({
+    src <- input$exploreSource
+    
+    if (src == "go") {
+      req(goResults())
+      go_df <- goResults()$go_results
+      # Show top terms across all ontologies, ordered by P.DE
+      go_df <- go_df[order(go_df$P.DE), ]
+      term_choices <- setNames(rownames(go_df),
+                               paste0(rownames(go_df), ": ", go_df$Term, " (p=", signif(go_df$P.DE, 3), ")"))
+      term_choices <- head(term_choices, 200)
+      selectizeInput("exploreTerm", "Select GO term:", choices = term_choices, selected = term_choices[1])
+      
+    } else if (src == "gsea") {
+      req(gseaResults())
+      gsea_df <- as.data.frame(gseaResults())
+      term_choices <- setNames(gsea_df$ID,
+                               paste0(gsea_df$ID, ": ", gsea_df$Description, " (p.adj=", signif(gsea_df$p.adjust, 3), ")"))
+      selectizeInput("exploreTerm", "Select GSEA term:", choices = term_choices, selected = term_choices[1])
+      
+    } else if (src == "kegg") {
+      req(gageRes())
+      gr <- gageRes()
+      up_ids   <- if (NROW(gr$up))   gr$up$PathwayID   else character(0)
+      down_ids <- if (NROW(gr$down)) gr$down$PathwayID else character(0)
+      up_desc   <- if (NROW(gr$up))   gr$up$Description   else character(0)
+      down_desc <- if (NROW(gr$down)) gr$down$Description else character(0)
+      
+      all_ids   <- c(up_ids, down_ids)
+      all_descs <- c(up_desc, down_desc)
+      if (length(all_ids) == 0) return(helpText("No significant KEGG pathways found. Run GAGE first."))
+      
+      term_choices <- setNames(all_ids, paste0(all_ids, ": ", all_descs))
+      selectizeInput("exploreTerm", "Select KEGG pathway:", choices = term_choices, selected = term_choices[1])
+    }
+  })
+  
+  # --- Load genes for the selected term ---
+  observeEvent(input$loadTermGenesBtn, {
+    req(input$exploreTerm, analysisResults())
+    
+    src <- input$exploreSource
+    term_id <- input$exploreTerm
+    orgdb_name <- isolate(input$organism)
+    orgdb <- get(orgdb_name)
+    ba <- analysisResults()
+    res_df <- as.data.frame(ba$res)
+    res_df$GeneSymbol <- rownames(res_df)
+    res_entrez <- ba$res_entrez
+    
+    gene_symbols <- character(0)
+    
+    withProgress(message = "Looking up genes in term...", value = 0.3, {
+      
+      if (src == "go") {
+        # Get ENTREZID for this GO term from the OrgDb
+        tryCatch({
+          entrez_in_term <- AnnotationDbi::select(orgdb, keys = term_id,
+                                                  columns = "ENTREZID",
+                                                  keytype = "GOALL")$ENTREZID
+          entrez_in_term <- unique(entrez_in_term[!is.na(entrez_in_term)])
+          
+          # Map to gene symbols via res_entrez
+          matched <- res_entrez[res_entrez$ENTREZID %in% entrez_in_term, ]
+          gene_symbols <- unique(matched$GeneIDs)
+          
+          # Store the term label
+          go_df <- goResults()$go_results
+          if (term_id %in% rownames(go_df)) {
+            exploreTermLabel(paste0(term_id, ": ", go_df[term_id, "Term"]))
+          } else {
+            exploreTermLabel(term_id)
+          }
+        }, error = function(e) {
+          showNotification(paste("GO lookup failed:", conditionMessage(e)), type = "error")
+        })
+        
+      } else if (src == "gsea") {
+        gsea_df <- as.data.frame(gseaResults())
+        row <- gsea_df[gsea_df$ID == term_id, ]
+        if (nrow(row) == 0) {
+          showNotification("Term not found in GSEA results.", type = "error")
+          return()
+        }
+        # core_enrichment contains slash-separated ENTREZID
+        core_entrez <- unlist(strsplit(row$core_enrichment, "/"))
+        matched <- res_entrez[res_entrez$ENTREZID %in% core_entrez, ]
+        gene_symbols <- unique(matched$GeneIDs)
+        exploreTermLabel(paste0(term_id, ": ", row$Description))
+        
+      } else if (src == "kegg") {
+        gr <- gageRes()
+        sp <- gr$species
+        
+        # Get gene members of this KEGG pathway and convert to Entrez IDs
+        tryCatch({
+          # keggConv maps KEGG gene IDs → NCBI Entrez IDs for this pathway
+          # Returns named vector: names = "dme:Dmel_CG1234", values = "ncbi-geneid:38864"
+          conv <- KEGGREST::keggConv("ncbi-geneid", term_id)
+          kegg_entrez <- sub("^ncbi-geneid:", "", conv)
+          kegg_entrez <- unique(kegg_entrez[nzchar(kegg_entrez)])
+          
+          matched <- res_entrez[res_entrez$ENTREZID %in% kegg_entrez, ]
+          gene_symbols <- unique(matched$GeneIDs)
+          
+          # Label
+          all_paths <- rbind(
+            if (NROW(gr$up)) gr$up else NULL,
+            if (NROW(gr$down)) gr$down else NULL
+          )
+          desc_row <- all_paths[all_paths$PathwayID == term_id, ]
+          if (NROW(desc_row) > 0) {
+            exploreTermLabel(paste0(term_id, ": ", desc_row$Description[1]))
+          } else {
+            exploreTermLabel(term_id)
+          }
+        }, error = function(e) {
+          showNotification(paste("KEGG lookup failed:", conditionMessage(e)), type = "error")
+        })
+      }
+      
+      incProgress(0.7)
+    })
+    
+    # Filter to genes that exist in the DESeq2 results
+    gene_symbols <- gene_symbols[gene_symbols %in% rownames(res_df)]
+    
+    if (length(gene_symbols) == 0) {
+      showNotification("No genes from this term found in the DE results.", type = "warning")
+      exploreGenes(NULL)
+      return()
+    }
+    
+    # Build output table
+    out_df <- res_df[gene_symbols, c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj"), drop = FALSE]
+    out_df$GeneSymbol <- rownames(out_df)
+    out_df <- out_df[, c("GeneSymbol", setdiff(names(out_df), "GeneSymbol"))]
+    out_df <- out_df[order(out_df$padj), ]
+    rownames(out_df) <- NULL
+    
+    exploreGenes(out_df)
+    showNotification(paste(nrow(out_df), "genes loaded from", exploreTermLabel()), type = "message")
+  })
+  
+  output$exploreGeneCountMsg <- renderUI({
+    eg <- exploreGenes()
+    if (is.null(eg)) return(NULL)
+    tags$p(style = "font-weight:bold;",
+           paste0(nrow(eg), " genes in: ", exploreTermLabel()))
+  })
+  
+  # --- Gene table ---
+  output$exploreGeneTable <- DT::renderDataTable({
+    req(exploreGenes())
+    DT::datatable(exploreGenes(), options = list(pageLength = 15, scrollX = TRUE), rownames = FALSE)
+  })
+  
+  output$dl_explore_genes <- downloadHandler(
+    filename = function() paste0("geneset_", gsub("[^A-Za-z0-9]", "_", exploreTermLabel()), ".csv"),
+    content  = function(f) readr::write_csv(req(exploreGenes()), f)
+  )
+  
+  # --- Heatmap ---
+  output$exploreHeatmap <- renderPlot({
+    req(exploreGenes(), analysisResults())
+    
+    genes <- exploreGenes()$GeneSymbol
+    vsd   <- analysisResults()$vsd
+    mat   <- assay(vsd)
+    
+    genes_in_mat <- genes[genes %in% rownames(mat)]
+    validate(need(length(genes_in_mat) >= 2, "Need at least 2 genes to draw a heatmap."))
+    
+    hm_mat <- mat[genes_in_mat, , drop = FALSE]
+    
+    # Annotation
+    sample_annotation <- data.frame(
+      Group = colData(vsd)$Group,
+      row.names = colnames(hm_mat)
+    )
+    n_groups <- length(unique(sample_annotation$Group))
+    group_colors <- if (n_groups <= 2) {
+      c("#66C2A5", "#FC8D62")[seq_len(n_groups)]
+    } else {
+      RColorBrewer::brewer.pal(min(n_groups, 8), "Set2")
+    }
+    names(group_colors) <- unique(sample_annotation$Group)
+    
+    # Colors
+    if (input$exploreHeatColor == "viridis") {
+      colors <- viridisLite::viridis(100)
+    } else {
+      colors <- colorRampPalette(rev(RColorBrewer::brewer.pal(11, input$exploreHeatColor)))(100)
+    }
+    
+    pheatmap::pheatmap(
+      hm_mat,
+      scale = input$exploreHeatScale,
+      clustering_distance_rows = "correlation",
+      clustering_distance_cols = "correlation",
+      show_rownames = (length(genes_in_mat) <= 80),
+      annotation_col = sample_annotation,
+      annotation_colors = list(Group = group_colors),
+      color = colors,
+      main = exploreTermLabel(),
+      fontsize = 10,
+      fontsize_row = if (length(genes_in_mat) > 50) 6 else 8
+    )
+  }, res = 96)
+  
+  # --- Boxplots ---
+  output$exploreBoxplotGeneUI <- renderUI({
+    req(exploreGenes())
+    genes <- exploreGenes()$GeneSymbol
+    selectizeInput("exploreBoxGene", "Select gene(s) to plot:",
+                   choices = genes, selected = head(genes, min(6, length(genes))),
+                   multiple = TRUE,
+                   options = list(maxItems = 20))
+  })
+  
+  output$exploreBoxplot <- renderPlot({
+    req(input$exploreBoxGene, analysisResults())
+    
+    vsd <- analysisResults()$vsd
+    mat <- assay(vsd)
+    meta <- as.data.frame(colData(vsd))
+    
+    genes_to_plot <- input$exploreBoxGene
+    genes_to_plot <- genes_to_plot[genes_to_plot %in% rownames(mat)]
+    validate(need(length(genes_to_plot) >= 1, "Select at least one gene."))
+    
+    # Build long-form data frame
+    plot_list <- lapply(genes_to_plot, function(g) {
+      data.frame(
+        Gene = g,
+        Expression = mat[g, ],
+        Sample = colnames(mat),
+        Group = meta$Group,
+        stringsAsFactors = FALSE
+      )
+    })
+    plot_df <- do.call(rbind, plot_list)
+    
+    ggplot(plot_df, aes(x = Group, y = Expression)) +
+      geom_boxplot(aes(fill = Group), outlier.shape = NA, alpha = 0.5) +
+      geom_jitter(aes(colour = Group), width = 0.2, size = 2) +
+      facet_wrap(~ Gene, scales = "free_y") +
+      theme_minimal(base_size = 13) +
+      labs(title = exploreTermLabel(),
+           y = "VST-normalised expression", x = "Group") +
+      theme(legend.position = "bottom")
+  })
+  
+  # --- Volcano with highlighted genes ---
+  output$exploreVolcano <- renderPlot({
+    req(exploreGenes(), analysisResults())
+    
+    res <- analysisResults()$res
+    res_df <- as.data.frame(res)
+    res_df$GeneSymbol <- rownames(res_df)
+    
+    term_genes <- exploreGenes()$GeneSymbol
+    res_df$InTerm <- res_df$GeneSymbol %in% term_genes
+    
+    # Significance for colouring the term genes
+    lfc_cutoff  <- input$lfcThreshold
+    padj_cutoff <- input$padjThreshold
+    
+    res_df$TermStatus <- "Background"
+    res_df$TermStatus[res_df$InTerm & !is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange >= lfc_cutoff]  <- "In term (Up)"
+    res_df$TermStatus[res_df$InTerm & !is.na(res_df$padj) & res_df$padj < padj_cutoff & res_df$log2FoldChange <= -lfc_cutoff] <- "In term (Down)"
+    res_df$TermStatus[res_df$InTerm & res_df$TermStatus == "Background"] <- "In term (NS)"
+    
+    res_df$TermStatus <- factor(res_df$TermStatus,
+                                levels = c("Background", "In term (NS)", "In term (Up)", "In term (Down)"))
+    
+    # Labels for term genes (top by padj)
+    term_df <- res_df[res_df$InTerm, ]
+    term_df <- term_df[order(term_df$padj), ]
+    top_labels <- head(term_df$GeneSymbol, 30)
+    res_df$label <- ifelse(res_df$GeneSymbol %in% top_labels, res_df$GeneSymbol, "")
+    
+    # Alpha: background dim, term genes full
+    res_df$pt_alpha <- ifelse(res_df$InTerm, 1, input$exploreVolcAlpha)
+    
+    # Size: term genes slightly larger
+    res_df$pt_size <- ifelse(res_df$InTerm, input$exploreVolcPtSize * 1.5, input$exploreVolcPtSize)
+    
+    term_colors <- c(
+      "Background"     = "grey80",
+      "In term (NS)"   = "#f4a736",
+      "In term (Up)"   = "#d62728",
+      "In term (Down)"  = "#1f77b4"
+    )
+    
+    # Plot background first, then term genes on top
+    ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj))) +
+      geom_point(data = res_df[!res_df$InTerm, ],
+                 colour = "grey80", size = input$exploreVolcPtSize,
+                 alpha = input$exploreVolcAlpha) +
+      geom_point(data = res_df[res_df$InTerm, ],
+                 aes(colour = TermStatus),
+                 size = input$exploreVolcPtSize * 1.5, alpha = 1) +
+      ggrepel::geom_text_repel(
+        data = res_df[res_df$label != "", ],
+        aes(label = label),
+        size = input$exploreVolcLabelSize,
+        max.overlaps = 25, show.legend = FALSE,
+        segment.size = 0.3, segment.color = "grey40"
+      ) +
+      scale_colour_manual(values = term_colors, name = "Gene status") +
+      geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", colour = "grey40") +
+      geom_hline(yintercept = -log10(padj_cutoff), linetype = "dashed", colour = "grey40") +
+      theme_minimal(base_size = 13) +
+      labs(title = exploreTermLabel(),
+           x = "log2 Fold Change", y = "-log10(adjusted p-value)")
+  }, res = 96)
   
   ###---Interactive volcano plot output---###
   
