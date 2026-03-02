@@ -247,7 +247,7 @@ ui <- fluidPage(
                  numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
                  uiOutput("groupOrderUI"),
                  uiOutput("contrastSelectUI"),
-                 uiOutput("flybaseCheckboxUI"),
+                 uiOutput("convertToSymbolUI"),
                  checkboxInput("filterLncRNA", "Filter out lncRNAs (keep only protein-coding)", value = FALSE),
                  actionButton("analyzeBtn", "Run Analysis"),
                  conditionalPanel(
@@ -686,6 +686,27 @@ server <- function(input, output, session) {
     logText()
   })
   
+  # --- Helper: auto-detect gene ID type from a sample of IDs ---
+  # Returns list(orgdb = "ENSEMBL"/"SYMBOL"/"FLYBASE", biomart = "ensembl_gene_id"/...)
+  detect_gene_id_type <- function(gene_ids) {
+    ids <- head(gene_ids[!is.na(gene_ids) & nzchar(gene_ids)], 200)
+    
+    # Check what fraction match known Ensembl patterns
+    ens_pattern <- "^ENS[A-Z]*G\\d+"
+    fb_pattern  <- "^FBgn\\d+"
+    
+    frac_ens <- mean(grepl(ens_pattern, ids))
+    frac_fb  <- mean(grepl(fb_pattern, ids))
+    
+    if (frac_ens > 0.5) {
+      return(list(orgdb = "ENSEMBL", biomart = "ensembl_gene_id"))
+    } else if (frac_fb > 0.5) {
+      return(list(orgdb = "FLYBASE", biomart = "flybase_gene_id"))
+    } else {
+      return(list(orgdb = "SYMBOL", biomart = "external_gene_name"))
+    }
+  }
+  
   # Expose whether the uploaded file is a plain count table (not an RDS)
   # Used by the conditionalPanel to show/hide the gene length file input
   output$isPlainCountTable <- reactive({
@@ -911,14 +932,10 @@ server <- function(input, output, session) {
       )
       
       # Determine which biomaRt attribute matches the gene IDs in the count table
-      bm_gene_attr <- if (orgdb_name == "org.Dm.eg.db" && !isTRUE(isolate(input$convertFlybase))) {
-        "flybase_gene_id"
-      } else {
-        "external_gene_name"
-      }
-      
       gene_ids <- unique(counts_data()$annotation$GeneID)
       gene_ids <- gene_ids[!is.na(gene_ids) & nzchar(gene_ids)]
+      id_type <- detect_gene_id_type(gene_ids)
+      bm_gene_attr <- id_type$biomart
       
       tryCatch({
         setProgress(value = 0.05, message = "Connecting to Ensembl...")
@@ -1159,10 +1176,19 @@ server <- function(input, output, session) {
     sample_info()
   })
   
-  output$flybaseCheckboxUI <- renderUI({
-    req(input$organism)
-    if (input$organism == "org.Dm.eg.db") {
-      checkboxInput("convertFlybase", "Convert FlyBase IDs?", value = TRUE)
+  output$convertToSymbolUI <- renderUI({
+    req(counts_data())
+    gene_ids <- counts_data()$annotation$GeneID
+    id_type <- detect_gene_id_type(gene_ids)
+    
+    if (id_type$orgdb != "SYMBOL") {
+      id_label <- id_type$orgdb  # "ENSEMBL" or "FLYBASE"
+      tagList(
+        checkboxInput("convertToSymbol",
+                      paste0("Convert ", id_label, " IDs to gene symbols?"),
+                      value = TRUE),
+        helpText(paste0("Detected ", id_label, " identifiers. Ticking this will map them to gene symbols for readability."))
+      )
     }
   })
   
@@ -1175,11 +1201,8 @@ server <- function(input, output, session) {
       fc <- counts_data_with_lengths()
       
       # Decide what your GeneID column represents
-      from_type <- if (orgdb_name == "org.Dm.eg.db" && isTRUE(input$convertFlybase)) {
-        "FLYBASE"
-      } else {
-        "SYMBOL"
-      }
+      id_type <- detect_gene_id_type(fc$annotation$GeneID)
+      from_type <- id_type$orgdb
       
       # Map -> ENTREZ, keep it clean and 1:1 on the input id
       symbol_to_entrez <- clusterProfiler::bitr(
@@ -1224,36 +1247,40 @@ server <- function(input, output, session) {
         design = ~ Group
       )
       
-      # Convert FLYBASE identifiers to symbols if checkbox ticked:
-      
-      if (orgdb_name == "org.Dm.eg.db") {
-        if (isTRUE(isolate(input$convertFlybase))) {
-          # Get the mapped gene symbols
-          gene_symbols <- mapIds(
-            orgdb,
-            keys = rownames(dds),
-            column = "SYMBOL",
-            keytype = "FLYBASE",
-            multiVals = "first"
-          )
-          
-          # Drop any rows with NA gene symbols
-          keep_idx <- !is.na(gene_symbols)
-          dds <- dds[keep_idx, ]
-          rownames(dds) <- gene_symbols[keep_idx]
+      # Convert non-symbol identifiers to gene symbols if checkbox ticked
+      if (isTRUE(isolate(input$convertToSymbol)) && from_type != "SYMBOL") {
+        appendLog(paste0("Converting ", from_type, " IDs to gene symbols..."))
+        showNotification(paste0("Converting ", from_type, " → gene symbols..."), type = "message")
+        
+        gene_symbols <- mapIds(
+          orgdb,
+          keys = rownames(dds),
+          column = "SYMBOL",
+          keytype = from_type,
+          multiVals = "first"
+        )
+        
+        # Drop any rows with NA gene symbols
+        keep_idx <- !is.na(gene_symbols)
+        n_dropped <- sum(!keep_idx)
+        dds <- dds[keep_idx, ]
+        rownames(dds) <- gene_symbols[keep_idx]
+        
+        if (n_dropped > 0) {
+          appendLog(paste0("Dropped ", n_dropped, " genes with no symbol mapping."))
+          showNotification(paste0("Dropped ", n_dropped, " genes with no symbol mapping."),
+                           type = "warning", duration = 6)
         }
+        appendLog(paste0("Converted to symbols. ", nrow(dds), " genes remaining."))
       }
       
       if (isTRUE(isolate(input$filterLncRNA))) {
         appendLog("Filtering out lncRNAs (keeping protein-coding only)...")
         showNotification("Filtering out lncRNAs...", type="message")
         
-        # Determine the current ID format (Symbols or FlyBase IDs)
-        current_keytype <- if (orgdb_name == "org.Dm.eg.db" && isTRUE(isolate(input$convertFlybase))) {
-          "SYMBOL"
-        } else {
-          from_type
-        }
+        # Determine the current ID format from the dds rownames
+        # (may have changed after FlyBase → Symbol conversion above)
+        current_keytype <- detect_gene_id_type(rownames(dds))$orgdb
         
         # Map rownames to their Gene Type using the selected OrgDb
         gene_types <- mapIds(
@@ -1321,15 +1348,10 @@ server <- function(input, output, session) {
       
       # Map gene symbols to Entrez IDs using bitr
       
-      from_type <- if (orgdb_name == "org.Dm.eg.db") {
-        if (isTRUE(isolate(input$convertFlybase))) {
-          "SYMBOL"
-        } else {
-          "FLYBASE"
-        }
-      } else {
-        "SYMBOL"
-      }
+      # Map gene IDs from DESeq2 results to Entrez IDs
+      # Detect from rownames(res) since these may differ from original GeneIDs
+      # (e.g. after FlyBase → Symbol conversion)
+      from_type <- detect_gene_id_type(rownames(res))$orgdb
       
       
       uni_entrez_ids <- clusterProfiler::bitr(
@@ -3066,9 +3088,7 @@ server <- function(input, output, session) {
     orgdb_name <- isolate(input$organism)
     orgdb      <- get(orgdb_name)
     
-    from_type <- if (orgdb_name == "org.Dm.eg.db") {
-      if (isTRUE(input$convertFlybase)) "SYMBOL" else "FLYBASE"
-    } else { "SYMBOL" }
+    from_type <- detect_gene_id_type(symbols)$orgdb
     
     mapped <- clusterProfiler::bitr(symbols, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
     
