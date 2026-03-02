@@ -1338,6 +1338,7 @@ server <- function(input, output, session) {
       res <- results(
         dds,
         lfcThreshold = isolate(input$lfcThreshold),
+        altHypothesis = "greaterAbs",
         alpha = isolate(input$padjThreshold),
         independentFiltering = isolate(input$deseqfilter),
         contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator))
@@ -2643,7 +2644,7 @@ server <- function(input, output, session) {
       primary_label <- paste0(input$contrastNumerator, "_vs_", input$contrastDenominator)
       primary_data  <- run_contrast_degs(dds, 
                                          input$contrastNumerator, input$contrastDenominator,
-                                         input$lfcThreshold, input$padjThreshold, dir)
+                                         input$cmpLFC, input$cmpPadj, dir)
       genesets  <- list()
       sig_dfs   <- list()   # store per-contrast significant results with correct stats
       genesets[[primary_label]] <- primary_data$genes
