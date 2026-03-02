@@ -2242,8 +2242,13 @@ server <- function(input, output, session) {
     
     # Label top genes by chosen p metric (and avoid NA ordering issues)
     n_top <- input$topgenes
-    ord <- order(res_df[[p_col]], na.last = NA) # removes NA p-values from ranking
-    top_genes <- rownames(res_df)[head(ord, n_top)]
+    
+    res_filt <- res_df %>%
+      filter(significance %in% c("Upregulated", "Downregulated"))
+    
+    ord <- order(res_filt[[p_col]], na.last = NA) # removes NA p-values from ranking
+    
+    top_genes <- rownames(res_filt)[head(ord, n_top)]
     res_df$label <- ifelse(rownames(res_df) %in% top_genes, rownames(res_df), NA)
     
     volcano_colors <- c(
