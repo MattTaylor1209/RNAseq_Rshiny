@@ -21,6 +21,8 @@ required_packages <- c("limma",
                        
                        "org.Hs.eg.db",
                        
+                       "org.Dr.eg.db",
+                       
                        "gplots",
                        
                        "RColorBrewer",
@@ -239,7 +241,8 @@ ui <- fluidPage(
                                "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
                                "Mouse (Mus musculus)" = "org.Mm.eg.db",
                                "Human (Homo sapiens)" = "org.Hs.eg.db",
-                               "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db"
+                               "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db",
+                               "Zebrafish (Danio rerio)" = "org.Dr.eg.db"
                              ),
                              selected = "org.Dm.eg.db"
                  ),
@@ -931,7 +934,8 @@ server <- function(input, output, session) {
                            "org.Hs.eg.db" = "hsapiens_gene_ensembl",
                            "org.Mm.eg.db" = "mmusculus_gene_ensembl",
                            "org.Rn.eg.db" = "rnorvegicus_gene_ensembl",
-                           "org.Dm.eg.db" = "dmelanogaster_gene_ensembl"
+                           "org.Dm.eg.db" = "dmelanogaster_gene_ensembl",
+                           "org.Dr.eg.db" = "drerio_gene_ensembl"
       )
       
       # Determine which biomaRt attribute matches the gene IDs in the count table
@@ -1654,6 +1658,7 @@ server <- function(input, output, session) {
     if (org == "org.Mm.eg.db") return("Mm")
     if (org == "org.Rn.eg.db") return("Rn")
     if (org == "org.Dm.eg.db") return("Dm")
+    if (org == "org.Dr.eg.db") return("Dr")
     "hsa"
   })
   
@@ -2278,6 +2283,7 @@ server <- function(input, output, session) {
     if (org == "org.Mm.eg.db") return("mmu")
     if (org == "org.Rn.eg.db") return("rno")
     if (org == "org.Dm.eg.db") return("dme")
+    if (org == "org.Dr.eg.db") return("dre")
     "hsa"
   })
   
@@ -3299,6 +3305,7 @@ server <- function(input, output, session) {
                           "org.Mm.eg.db" = "mmu",
                           "org.Hs.eg.db" = "hsa",
                           "org.Dm.eg.db" = "dme",
+                          "org.Dr.eg.db" = "dre",
                           "hsa"
       )
       
