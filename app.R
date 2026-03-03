@@ -238,6 +238,14 @@ ui <- fluidPage(
                    br(),
                    uiOutput("manualSampleCountMsg")
                  ),
+                 conditionalPanel(
+                   condition = "output.inputsReady",
+                   tags$hr(),
+                   h5("Sample filter"),
+                   helpText("Deselect samples to exclude them from all analyses."),
+                   uiOutput("sampleFilterUI"),
+                   tags$hr()
+                 ),
                  selectInput("organism", "Select organism:",
                              choices = c(
                                "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
@@ -1111,6 +1119,24 @@ server <- function(input, output, session) {
     }
   })
   
+  # ---- Sample filter UI + filtered reactive ----
+  output$sampleFilterUI <- renderUI({
+    req(sample_info())
+    sn <- as.character(sample_info()$SampleName)
+    checkboxGroupInput("selectedSamples", "Include samples:",
+                       choices = sn, selected = sn)
+  })
+  
+  filtered_sample_info <- reactive({
+    si <- sample_info()
+    req(si)
+    sel <- input$selectedSamples
+    if (is.null(sel)) return(si)
+    out <- si[as.character(si$SampleName) %in% sel, , drop = FALSE]
+    validate(need(nrow(out) >= 2, "Please keep at least 2 samples selected."))
+    out
+  })
+  
   # Tell UI when both files are ready
   output$inputsReady <- reactive({
     has_counts <- !is.null(input$countsFile)
@@ -1125,11 +1151,11 @@ server <- function(input, output, session) {
   
   # Reactive to get unique group names
   group_levels <- reactive({
-    req(sample_info())
-    unique(as.character(sample_info()$Group))
+    req(filtered_sample_info())
+    unique(as.character(filtered_sample_info()$Group))
   })
   
-  observeEvent(sample_info(), {
+  observeEvent(filtered_sample_info(), {
     updateSelectInput(session, "groupOrder",
                       choices = group_levels(),
                       selected = group_levels())
@@ -1177,6 +1203,10 @@ server <- function(input, output, session) {
     if (ncol(counts) == nrow(sample_info())) {
       colnames(counts) <- sample_info()$SampleName
     }
+    # Subset to selected samples for preview
+    fsi <- filtered_sample_info()
+    keep_cols <- colnames(counts) %in% as.character(fsi$SampleName)
+    if (any(keep_cols)) counts <- counts[, keep_cols, drop = FALSE]
     head_df <- head(counts)
     head_df <- cbind(GeneID = rownames(head_df), head_df)
     head_df
@@ -1184,7 +1214,7 @@ server <- function(input, output, session) {
   
   # Preview sample info
   output$sampleInfo <- renderTable({
-    sample_info()
+    filtered_sample_info()
   })
   
   output$convertToSymbolUI <- renderUI({
@@ -1239,7 +1269,11 @@ server <- function(input, output, session) {
       if (ncol(counts) == nrow(sample_info())) {
         colnames(counts) <- sample_info()$SampleName
       }
-      col_data <- sample_info()
+      col_data <- filtered_sample_info()
+      
+      # Subset counts to only selected samples
+      keep_samples <- colnames(counts) %in% as.character(col_data$SampleName)
+      counts <- counts[, keep_samples, drop = FALSE]
       
       # set group levels
       col_data$Group <- factor(col_data$Group, levels = isolate(input$groupOrder))
@@ -1413,8 +1447,8 @@ server <- function(input, output, session) {
       
       # Convert PCA results to a dataframe
       pca_df <- as.data.frame(pcDat$x)
-      pca_df$SampleName <- sample_info()$SampleName  # Add sample names
-      pca_df$Group <- sample_info()$Group  # Add group info
+      pca_df$SampleName <- filtered_sample_info()$SampleName  # Add sample names
+      pca_df$Group <- filtered_sample_info()$Group  # Add group info
       
       
       incProgress(0.2)
@@ -1789,7 +1823,7 @@ server <- function(input, output, session) {
       go_df <- go_df[order(go_df$P.DE), ]
       term_choices <- setNames(rownames(go_df),
                                paste0(rownames(go_df), ": ", go_df$Term, " (p=", signif(go_df$P.DE, 3), ")"))
-      term_choices <- head(term_choices, 200)
+      #term_choices <- head(term_choices, 200)
       selectizeInput("exploreTerm", "Select GO term:", choices = term_choices, selected = term_choices[1])
       
     } else if (src == "gsea") {
