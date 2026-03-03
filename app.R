@@ -1823,7 +1823,7 @@ server <- function(input, output, session) {
       go_df <- go_df[order(go_df$P.DE), ]
       term_choices <- setNames(rownames(go_df),
                                paste0(rownames(go_df), ": ", go_df$Term, " (p=", signif(go_df$P.DE, 3), ")"))
-      #term_choices <- head(term_choices, 200)
+      #term_choices <- head(term_choices, 200) # commented out so that all terms are available (slower)
       selectizeInput("exploreTerm", "Select GO term:", choices = term_choices, selected = term_choices[1])
       
     } else if (src == "gsea") {
