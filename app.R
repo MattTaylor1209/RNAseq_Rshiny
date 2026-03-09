@@ -365,6 +365,20 @@ ui <- fluidPage(
                    ),
                    plotOutput("heatmapPlot", height = "600px")
           ),
+          tabPanel("GO",
+                   fluidRow(
+                     column(4,
+                            actionButton("runGO", "Run GO"),
+                            selectInput("GOontology", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                            numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1)
+                     ),
+                     column(8,
+                            plotOutput("GOBarplot"),
+                            DT::dataTableOutput("goTable"),
+                            downloadButton("dl_go", "Download GO table")
+                     )
+                   )
+          ),
           tabPanel("GSEA",
                    fluidRow(
                      column(4, 
@@ -384,20 +398,6 @@ ui <- fluidPage(
                      )
                    )
                    
-          ),
-          tabPanel("GO",
-                   fluidRow(
-                     column(4,
-                            actionButton("runGO", "Run GO"),
-                            selectInput("GOontology", "Ontology", c("BP","MF","CC"), selected = "BP"),
-                            numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1)
-                     ),
-                     column(8,
-                            plotOutput("GOBarplot"),
-                            DT::dataTableOutput("goTable"),
-                            downloadButton("dl_go", "Download GO table")
-                     )
-                   )
           ),
           tabPanel("GAGE (KEGG)",
                    fluidRow(
@@ -1788,7 +1788,7 @@ server <- function(input, output, session) {
   output$goTable <- DT::renderDataTable({
     req(goResults(), input$GOontology)
     go_results <- goResults()$go_results
-    topgo <- limma::topGO(go_results, ontology = input$GOontology, number = input$GOnumber)
+    topgo <- limma::topGO(go_results, ontology = input$GOontology, number = Inf)
     topgo$GOID <- rownames(topgo)
     topgo <- topgo[, c("GOID", setdiff(names(topgo), "GOID"))]
     DT::datatable(topgo, options = list(pageLength = 10, scrollX = TRUE),
