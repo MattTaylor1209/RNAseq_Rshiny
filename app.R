@@ -268,10 +268,6 @@ ui <- fluidPage(
                  conditionalPanel(
                    condition = "output.inputsReady",
                    checkboxInput("viewPreview", "Preview input files", value = TRUE)
-                 ),
-                 conditionalPanel(
-                   condition = "output.analysisReady",
-                   downloadButton("dl_res", "Download DE table")
                  )
                  
     ),
@@ -311,7 +307,12 @@ ui <- fluidPage(
                                       value = 10),
                    ),
                    plotOutput("pcaPlot")),
-          tabPanel("DE Results", dataTableOutput("deTable")),
+          tabPanel("DE Results", dataTableOutput("deTable"),
+                   conditionalPanel(
+                     condition = "output.analysisReady",
+                     downloadButton("dl_res", "Download DE table")
+                   )
+                   ),
           tabPanel("Heatmap",
                    fluidRow(
                      column(3,
