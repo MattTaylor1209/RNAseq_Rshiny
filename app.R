@@ -383,13 +383,47 @@ ui <- fluidPage(
           tabPanel("GSEA",
                    fluidRow(
                      column(4, 
-                            selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                            selectInput("gsea_type", "Pathways to analyse:",
+                                        choices = c(
+                                          "GO",
+                                          "Wiki Pathways",
+                                          "KEGG"
+                                        ),
+                                        selected = "GO"
+                            ),
+                            conditionalPanel(
+                              condition = "input.gsea_type == 'Wiki Pathways'",
+                              selectInput("wikiorg", "Select Wiki Pathways Organism",
+                                          choices = c("Homo sapiens", 
+                                                      "Mus musculus",
+                                                      "Drosophila melanogaster",
+                                                      "Rattus norvegicus",
+                                                      "Danio rerio"),
+                                          selected = "Drosophila melanogaster")
+                            ),
+                            conditionalPanel(
+                              condition = "input.gsea_type == 'KEGG'",
+                              selectInput("keggorg", "Select KEGG Organism",
+                                          choices = c(
+                                            "Human (Homo sapiens)" = "hsa",
+                                            "Mouse (Mus musculus)" = "mmu",
+                                            "Rat (Rattus norvegicus)" = "rno",
+                                            "Drosophila (Drosophila melanogaster)" = "dme",
+                                            "Zebrafish (Danio rerio)" = "dre"
+                                          ),
+                                          selected = "dme")
+                            ),
+                            conditionalPanel(
+                              condition = "input.gsea_type == 'GO'",
+                              selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP")
+                            ),
                             selectInput("gseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
                             numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
                             numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
                             numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
                             numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
-                            actionButton("runGSEA", "Run GSEA"),),
+                            actionButton("runGSEA", "Run GSEA"),
+                            ),
                      column(8,
                             plotOutput("gseaDotplot"),
                             selectizeInput("gseaTerm", "Show enrichment plot for:", choices = NULL, multiple = FALSE),
@@ -1642,17 +1676,44 @@ server <- function(input, output, session) {
       validate(need(length(m) >= input$gseaMin,
                     "Not enough ranked genes to run GSEA."))
       
-      # 3) Call gseGO; add eps=0 if your clusterProfiler supports it
-      gse <- clusterProfiler::gseGO(
-        geneList     = m,
-        OrgDb        = orgdb,
-        keyType      = "ENTREZID",
-        ont          = input$gseaOnt,
-        minGSSize    = input$gseaMin,
-        maxGSSize    = input$gseaMax,
-        pvalueCutoff = input$gseaP,
-        verbose      = TRUE
-      )
+      # Run the appropriate gse function
+      
+      if(input$gsea_type == "GO") {
+        gse <- clusterProfiler::gseGO(
+          geneList     = m,
+          OrgDb        = orgdb,
+          keyType      = "ENTREZID",
+          ont          = input$gseaOnt,
+          minGSSize    = input$gseaMin,
+          maxGSSize    = input$gseaMax,
+          pvalueCutoff = input$gseaP,
+          verbose      = TRUE
+        )
+      }
+    
+      else if(input$gsea_type == "Wiki Pathways"){
+        gse <- clusterProfiler::gseWP(
+          geneList     = m,
+          organism     = input$wikiorg,
+          minGSSize    = input$gseaMin,
+          maxGSSize    = input$gseaMax,
+          pvalueCutoff = input$gseaP,
+          verbose      = TRUE
+        )
+      }
+      
+      else if(input$gsea_type == "KEGG"){
+        gse <- clusterProfiler::gseKEGG(
+          geneList     = m,
+          organism     = input$keggorg,
+          keyType = "ncbi-geneid",
+          minGSSize    = input$gseaMin,
+          maxGSSize    = input$gseaMax,
+          pvalueCutoff = input$gseaP,
+          verbose      = TRUE
+        )
+      }
+      
       
       incProgress(0.8)
       appendLog("GSEA analysis complete.")
