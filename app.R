@@ -448,8 +448,10 @@ ui <- fluidPage(
                      column(8,
                             h4("Significant pathways (Upregulated)"),
                             DT::dataTableOutput("gageUpTable"),
+                            downloadButton("dl_gage_up", "Download GAGE up table"),
                             h4("Significant pathways (Downregulated)"),
-                            DT::dataTableOutput("gageDownTable")
+                            DT::dataTableOutput("gageDownTable"),
+                            downloadButton("dl_gage_down", "Download GAGE down table")
                      )
                    ),
                    hr(),
@@ -2542,6 +2544,18 @@ server <- function(input, output, session) {
     
     DT::datatable(df, options = list(pageLength = 10), selection = "single", rownames = FALSE)
   })
+  
+  
+  output$dl_gage_up <- downloadHandler(
+    filename = function() "GAGE_results_UP.csv",
+    content  = function(f) readr::write_csv(as.data.frame(gageRes()$up), f)
+  )
+  
+  output$dl_gage_down <- downloadHandler(
+    filename = function() "GAGE_results_DOWN.csv",
+    content  = function(f) readr::write_csv(as.data.frame(gageRes()$down), f)
+  )
+  
   
   # ---- Update KEGG ID dropdown when results arrive ----
   observeEvent(gageRes(), ignoreInit = TRUE, {
