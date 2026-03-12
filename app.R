@@ -1177,7 +1177,42 @@ server <- function(input, output, session) {
   sample_info <- reactive({
     if (input$sampleInfoMode == "upload") {
       req(input$sampleInfoFile)
-      read.delim(input$sampleInfoFile$datapath, stringsAsFactors = TRUE)
+      
+      path <- input$sampleInfoFile$datapath
+      
+      # Try to read the file, catching malformed input
+      si <- tryCatch({
+        read.delim(path, stringsAsFactors = TRUE)
+      }, error = function(e) {
+        # Fall back: try comma-separated in case user uploaded .csv-style
+        tryCatch({
+          read.csv(path, stringsAsFactors = TRUE)
+        }, error = function(e2) {
+          showNotification(
+            paste("Could not read sample info file:", e$message,
+                  "\nExpected a tab- or comma-delimited file with a header row."),
+            type = "error", duration = NULL
+          )
+          NULL
+        })
+      })
+      
+      validate(need(!is.null(si), "Sample info file could not be parsed. Check the format."))
+      validate(need(ncol(si) >= 2,
+                    paste0("Sample info has only ", ncol(si), " column(s). ",
+                           "Expected at least 2 (e.g. SampleName, Group). ",
+                           "Check the delimiter — the file should be tab-separated.")))
+      validate(need("SampleName" %in% colnames(si),
+                    paste0("Column 'SampleName' not found. Found columns: ",
+                           paste(colnames(si), collapse = ", "),
+                           ". Check header names and delimiter.")))
+      validate(need("Group" %in% colnames(si),
+                    paste0("Column 'Group' not found. Found columns: ",
+                           paste(colnames(si), collapse = ", "),
+                           ". Check header names and delimiter.")))
+      
+      si
+      
     } else {
       req(manualConfirmed())
       manual_sample_info()
