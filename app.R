@@ -3045,7 +3045,11 @@ server <- function(input, output, session) {
     }
     if (startsWith(choice, "PAIR__")) {
       pair_nms <- strsplit(sub("^PAIR__", "", choice), "\\|\\|\\|")[[1]]
-      return(Reduce(intersect, gs[pair_nms]))
+      shared <- Reduce(intersect, gs[pair_nms])
+      # Exclude genes that also appear in other contrasts (exclusive overlap)
+      others <- setdiff(nms, pair_nms)
+      for (o in others) shared <- setdiff(shared, gs[[o]])
+      return(shared)
     }
     character(0)
   }
