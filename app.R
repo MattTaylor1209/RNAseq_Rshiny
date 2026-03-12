@@ -2381,8 +2381,8 @@ server <- function(input, output, session) {
       xaxis = list(title = "log2 Fold Change"),
       yaxis = list(title = "-log10 Adjusted p-value"),
       shapes = list(
-        list(type = "line", x0 = -lfc_cutoff, x1 = -lfc_cutoff, y0 = 0, y1 = max(-log10(volcano_data$padj)), line = list(dash = "dash")),
-        list(type = "line", x0 =  lfc_cutoff, x1 =  lfc_cutoff, y0 = 0, y1 = max(-log10(volcano_data$padj)), line = list(dash = "dash")),
+        list(type = "line", x0 = -lfc_cutoff, x1 = -lfc_cutoff, y0 = 0, y1 = max(volcano_data$log10padj, na.rm = TRUE), line = list(dash = "dash")),
+        list(type = "line", x0 =  lfc_cutoff, x1 =  lfc_cutoff, y0 = 0, y1 = max(volcano_data$log10padj, na.rm = TRUE), line = list(dash = "dash")),
         list(type = "line", y0 = -log10(padj_cutoff), y1 = -log10(padj_cutoff),
              x0 = min(volcano_data$log2FoldChange), x1 = max(volcano_data$log2FoldChange), line = list(dash = "dash"))
       )
@@ -3240,6 +3240,18 @@ server <- function(input, output, session) {
       res_c <- res_c[!is.na(res_c$padj) & !is.na(res_c$log2FoldChange), ]
       res_c$GeneID <- rownames(res_c)
       
+      # Compute -log10(padj) with capping for extreme values
+      # Replace padj == 0 with the smallest non-zero padj so -log10 is finite
+      min_nonzero_padj <- min(res_c$padj[res_c$padj > 0], na.rm = TRUE)
+      res_c$padj_safe <- ifelse(res_c$padj == 0, min_nonzero_padj, res_c$padj)
+      res_c$neg_log10_padj <- -log10(res_c$padj_safe)
+      
+      # Cap at a sensible ceiling and flag capped genes with a different shape
+      y_cap <- quantile(res_c$neg_log10_padj, 0.999)
+      y_cap <- max(y_cap, -log10(spec$padj) + 10)  # ensure cap is above the significance line
+      res_c$capped <- res_c$neg_log10_padj > y_cap
+      res_c$neg_log10_padj_plot <- pmin(res_c$neg_log10_padj, y_cap)
+      
       # Determine shared vs unique membership with concordance for shared genes.
       # The context (input$vennVolcContext) controls which contrasts count as "other":
       #   ALL_OTHER      -> any other contrast that has the gene counts as sharing
@@ -3327,8 +3339,11 @@ server <- function(input, output, session) {
       )
       cat_colors[unique_col_name] <- "#f4a736"
       
-      ggplot(res_c, aes(x = log2FoldChange, y = -log10(padj), colour = Category, label = label)) +
-        geom_point(size = input$cmpVolcPtSz, alpha = 0.7) +
+      ggplot(res_c, aes(x = log2FoldChange, y = neg_log10_padj_plot, colour = Category, label = label)) +
+        geom_point(aes(shape = capped), size = input$cmpVolcPtSz, alpha = 0.7) +
+        scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
+                           labels = c("FALSE" = "Within range", "TRUE" = "Capped (more significant)"),
+                           guide = guide_legend(title = NULL, order = 2)) +
         ggrepel::geom_text_repel(size = 3, max.overlaps = 20, show.legend = FALSE) +
         scale_colour_manual(values = cat_colors) +
         geom_vline(xintercept = c(-spec$lfc, spec$lfc), linetype = "dashed", colour = "grey40") +
@@ -3470,7 +3485,7 @@ server <- function(input, output, session) {
       })
       
       output$cmpGOtable <- DT::renderDataTable({
-        topgo <- limma::topGO(go_res, ontology = input$cmpGOont, number = input$cmpGOnum)
+        topgo <- limma::topGO(go_res, ontology = input$cmpGOont, number = Inf)
         DT::datatable(topgo, options = list(pageLength = 10))
       })
       
