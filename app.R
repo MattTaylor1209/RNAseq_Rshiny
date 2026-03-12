@@ -2433,13 +2433,19 @@ server <- function(input, output, session) {
       need("pvalue" %in% names(res_df), "Missing pvalue in results.")
     )
     
-    # Precompute -log10 metrics (avoid doing this inside aes)
-    res_df$log10padj <- -log10(res_df$padj)
-    res_df$log10p    <- -log10(res_df$pvalue)
+    # Compute -log10 metrics, handling padj/pvalue == 0
+    min_nonzero_padj <- min(res_df$padj[res_df$padj > 0], na.rm = TRUE)
+    min_nonzero_p    <- min(res_df$pvalue[res_df$pvalue > 0], na.rm = TRUE)
     
-    # Replace Inf (e.g. pvalue = 0) with NA so ggplot doesn't choke
-    res_df$log10padj[is.infinite(res_df$log10padj)] <- NA
-    res_df$log10p[is.infinite(res_df$log10p)] <- NA
+    res_df$log10padj <- -log10(ifelse(res_df$padj == 0, min_nonzero_padj, res_df$padj))
+    res_df$log10p    <- -log10(ifelse(res_df$pvalue == 0, min_nonzero_p, res_df$pvalue))
+    
+    # Cap at 99.9th percentile to prevent axis stretching
+    y_col_name <- if (isTRUE(input$pvalueselect)) "log10padj" else "log10p"
+    y_cap <- quantile(res_df[[y_col_name]], 0.999, na.rm = TRUE)
+    res_df$capped <- !is.na(res_df[[y_col_name]]) & res_df[[y_col_name]] > y_cap
+    res_df$log10padj <- pmin(res_df$log10padj, quantile(res_df$log10padj, 0.999, na.rm = TRUE))
+    res_df$log10p    <- pmin(res_df$log10p, quantile(res_df$log10p, 0.999, na.rm = TRUE))
     
     # Decide which p column is active
     use_padj <- isTRUE(input$pvalueselect)  # TRUE -> use padj; FALSE -> use pvalue
@@ -2481,7 +2487,10 @@ server <- function(input, output, session) {
     )
     
     ggplot(res_df, aes(x = log2FoldChange, y = .data[[y_col]])) +
-      geom_point(aes(color = significance), size = input$volcpointsize) +
+      geom_point(aes(color = significance, shape = capped), size = input$volcpointsize) +
+      scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
+                         labels = c("FALSE" = "Within range", "TRUE" = "Capped"),
+                         guide = guide_legend(title = NULL)) +
       scale_color_manual(values = volcano_colors) +
       theme_minimal() +
       theme(
