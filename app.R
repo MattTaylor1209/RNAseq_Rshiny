@@ -202,8 +202,8 @@ ui <- fluidPage(
   
   sidebarLayout(
     sidebarPanel(width = 3,
-                 fileInput("countsFile", "Upload Count Data (.rds, .csv, .tsv, .txt)",
-                           accept = c(".rds", ".csv", ".tsv", ".txt")),
+                 fileInput("countsFile", "Upload Count Data (.rds, .csv, .tsv, .txt, .xls)",
+                           accept = c(".rds", ".csv", ".tsv", ".txt", ".xls")),
                  conditionalPanel(
                    condition = "output.isPlainCountTable",
                    uiOutput("geneLengthStatusUI"),
@@ -827,7 +827,9 @@ server <- function(input, output, session) {
     tbl
   })
   
-  # Load uploaded count data — supports featureCounts .rds OR plain count tables (.csv/.tsv/.txt)
+  # Load uploaded count data — supports featureCounts .rds OR plain count tables (.csv/.tsv/.txt/.xls)
+  # Automatically detects and separates annotation columns (gene_name, gene_length, etc.)
+  # from count columns, even when they are interleaved in the same file.
   counts_data <- reactive({
     req(input$countsFile)
     path <- input$countsFile$datapath
@@ -844,7 +846,8 @@ server <- function(input, output, session) {
       return(obj)
     }
     
-    # --- Plain count table or featureCounts text output (.csv / .tsv / .txt) ---
+    # --- Plain count table or featureCounts text output (.csv / .tsv / .txt / .xls) ---
+    # .xls files exported from tools like STAR/htseq are often tab-delimited text despite the extension
     sep <- if (ext == "csv") "," else "\t"
     
     # Read the full table, skipping comment lines (featureCounts text output
@@ -866,9 +869,14 @@ server <- function(input, output, session) {
     # Strategy: identify which columns are numeric (counts) vs character
     # (annotation metadata) and split them apart.
     
-    # Known featureCounts annotation column names (case-insensitive match)
+    # Known annotation column names (case-insensitive match).
+    # These are NEVER count columns even if they contain numbers
+    # (e.g. gene_length, gene_start, gene_end, gene_chr with numeric chromosomes).
     fc_annot_names <- c("geneid", "chr", "start", "end", "strand", "length",
-                        "gene_id", "gene_type", "gene_name", "gene_biotype")
+                        "gene_id", "gene_type", "gene_name", "gene_biotype",
+                        "gene_chr", "gene_start", "gene_end", "gene_strand",
+                        "gene_length", "gene_description", "tf_family",
+                        "transcript_id", "transcript_biotype")
     
     # Use the first column as gene IDs regardless of its name
     gene_ids <- raw[[1]]
@@ -876,8 +884,14 @@ server <- function(input, output, session) {
     # Classify remaining columns as annotation (character/non-numeric) or count (numeric)
     remaining <- raw[, -1, drop = FALSE]
     
-    is_count_col <- vapply(remaining, function(col) {
-      # A count column should be coercible to integer with no (or very few) NAs
+    is_count_col <- vapply(seq_along(remaining), function(j) {
+      col_name <- tolower(names(remaining)[j])
+      col      <- remaining[[j]]
+      
+      # If the column name matches a known annotation field, it's NOT a count column
+      if (col_name %in% fc_annot_names) return(FALSE)
+      
+      # Otherwise, a count column should be coercible to integer with no (or very few) NAs
       suppressWarnings({
         nums <- as.numeric(col)
       })
@@ -898,7 +912,7 @@ server <- function(input, output, session) {
     
     # Log what was detected
     if (ncol(annot_cols) > 0) {
-      showNotification(paste0("Detected featureCounts text format. ",
+      showNotification(paste0("Detected annotation columns in count file. ",
                               "Stripped ", ncol(annot_cols), " annotation column(s): ",
                               paste(names(annot_cols), collapse = ", "), "."),
                        type = "message", duration = 8)
@@ -919,10 +933,41 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
     
-    # Extract gene length from the featureCounts 'Length' column if present
+    # Store gene_name column if present (for optional Ensembl → symbol conversion)
+    gene_name_col <- NULL
+    for (candidate in c("gene_name", "GeneName", "gene_symbol", "Symbol")) {
+      if (candidate %in% names(annot_cols)) {
+        gene_name_col <- candidate
+        break
+      }
+    }
+    if (!is.null(gene_name_col)) {
+      gn_vec <- as.character(annot_cols[[gene_name_col]])
+      # If duplicates were summed, keep first gene_name per unique GeneID
+      if (length(gn_vec) != nrow(annotation_df)) {
+        gn_df <- data.frame(GeneID = gene_ids, GeneName = gn_vec, stringsAsFactors = FALSE)
+        gn_df <- gn_df[!duplicated(gn_df$GeneID), ]
+        annotation_df <- dplyr::left_join(annotation_df, gn_df, by = "GeneID")
+      } else {
+        annotation_df$GeneName <- gn_vec
+      }
+      showNotification(paste0("Found gene symbol column '", gene_name_col, "' in file."),
+                       type = "message", duration = 6)
+    }
+    
+    # Extract gene length from annotation columns if present.
+    # Accept common column names: "Length" (featureCounts), "gene_length" (e.g. STAR/htseq exports)
     fc_length_extracted <- FALSE
-    if ("Length" %in% names(annot_cols)) {
-      len_vec <- as.numeric(annot_cols$Length)
+    length_col_name <- NULL
+    for (candidate in c("Length", "gene_length", "length")) {
+      if (candidate %in% names(annot_cols)) {
+        length_col_name <- candidate
+        break
+      }
+    }
+    
+    if (!is.null(length_col_name)) {
+      len_vec <- as.numeric(annot_cols[[length_col_name]])
       # If there were duplicate gene IDs, average the lengths per unique ID
       if (length(len_vec) != nrow(annotation_df)) {
         len_df <- data.frame(GeneID = gene_ids, Length = len_vec,
@@ -933,7 +978,7 @@ server <- function(input, output, session) {
         annotation_df$Length <- len_vec
       }
       fc_length_extracted <- TRUE
-      showNotification("Extracted gene lengths from featureCounts 'Length' column.",
+      showNotification(paste0("Extracted gene lengths from '", length_col_name, "' column."),
                        type = "message", duration = 6)
     }
     
@@ -1406,19 +1451,40 @@ server <- function(input, output, session) {
         appendLog(paste0("Converting ", from_type, " IDs to gene symbols..."))
         showNotification(paste0("Converting ", from_type, " → gene symbols..."), type = "message")
         
-        gene_symbols <- mapIds(
-          orgdb,
-          keys = rownames(dds),
-          column = "SYMBOL",
-          keytype = from_type,
-          multiVals = "first"
-        )
+        # Prefer embedded gene names from the file (e.g. gene_name column) over mapIds,
+        # since the file's own annotation matches its own IDs exactly.
+        if ("GeneName" %in% names(fc$annotation)) {
+          name_map <- setNames(fc$annotation$GeneName, fc$annotation$GeneID)
+          gene_symbols <- name_map[rownames(dds)]
+          # Treat entries where GeneName == GeneID (i.e. no real symbol) as NA
+          gene_symbols[gene_symbols == names(gene_symbols)] <- NA_character_
+          appendLog("Using embedded gene names from the count file.")
+        } else {
+          gene_symbols <- mapIds(
+            orgdb,
+            keys = rownames(dds),
+            column = "SYMBOL",
+            keytype = from_type,
+            multiVals = "first"
+          )
+        }
         
         # Drop any rows with NA gene symbols
         keep_idx <- !is.na(gene_symbols)
         n_dropped <- sum(!keep_idx)
         dds <- dds[keep_idx, ]
         rownames(dds) <- gene_symbols[keep_idx]
+        
+        # Handle any duplicates introduced by the symbol mapping
+        if (anyDuplicated(rownames(dds))) {
+          n_dup <- sum(duplicated(rownames(dds)))
+          appendLog(paste0("Resolving ", n_dup, " duplicate gene symbols (keeping highest-count row)."))
+          # Keep the row with the highest total count for each symbol
+          total_counts <- rowSums(counts(dds))
+          keep_order <- order(total_counts, decreasing = TRUE)
+          dds <- dds[keep_order, ]
+          dds <- dds[!duplicated(rownames(dds)), ]
+        }
         
         if (n_dropped > 0) {
           appendLog(paste0("Dropped ", n_dropped, " genes with no symbol mapping."))
