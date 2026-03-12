@@ -316,15 +316,24 @@ ui <- fluidPage(
           tabPanel("Heatmap",
                    fluidRow(
                      column(3,
-                            numericInput("heatmapTopN", "Number of top DE genes", 
+                            radioButtons("heatmapGeneSource", "Gene selection:",
+                                         choices = c("Top DE genes" = "de",
+                                                     "Most variable genes (all samples)" = "variance"),
+                                         selected = "de")
+                     ),
+                     column(3,
+                            numericInput("heatmapTopN", "Number of genes", 
                                          value = 50, min = 10, max = 500, step = 10)
                      ),
                      column(3,
-                            selectInput("heatmapSortBy", "Sort genes by:",
-                                        choices = c("Adjusted p-value" = "padj", 
-                                                    "log2 Fold Change (absolute)" = "abs_lfc",
-                                                    "Test statistic (absolute)" = "abs_stat"),
-                                        selected = "padj")
+                            conditionalPanel(
+                              condition = "input.heatmapGeneSource == 'de'",
+                              selectInput("heatmapSortBy", "Sort genes by:",
+                                          choices = c("Adjusted p-value" = "padj", 
+                                                      "log2 Fold Change (absolute)" = "abs_lfc",
+                                                      "Test statistic (absolute)" = "abs_stat"),
+                                          selected = "padj")
+                            )
                      ),
                      column(3,
                             selectInput("heatmapScale", "Scale data:",
@@ -332,12 +341,12 @@ ui <- fluidPage(
                                                     "Column (sample)" = "column", 
                                                     "None" = "none"),
                                         selected = "row")
-                     ),
-                     column(3,
-                            checkboxInput("heatmapClusterRows", "Cluster rows (genes)", value = TRUE)
                      )
                    ),
                    fluidRow(
+                     column(3,
+                            checkboxInput("heatmapClusterRows", "Cluster rows (genes)", value = TRUE)
+                     ),
                      column(3,
                             checkboxInput("heatmapClusterCols", "Cluster columns (samples)", value = TRUE)
                      ),
@@ -1620,17 +1629,34 @@ server <- function(input, output, session) {
     # Get expression data
     mat <- assay(vsd)
     
-    # Convert results to dataframe and add sorting columns
-    res_df <- as.data.frame(res)
-    res_df$abs_lfc <- abs(res_df$log2FoldChange)
-    res_df$abs_stat <- abs(res_df$stat)
-    
-    # Sort by selected metric and get top N genes
-    top_genes <- switch(input$heatmapSortBy,
-                        "padj" = head(rownames(res_df[order(res_df$padj, na.last = TRUE), ]), input$heatmapTopN),
-                        "abs_lfc" = head(rownames(res_df[order(res_df$abs_lfc, decreasing = TRUE, na.last = TRUE), ]), input$heatmapTopN),
-                        "abs_stat" = head(rownames(res_df[order(res_df$abs_stat, decreasing = TRUE, na.last = TRUE), ]), input$heatmapTopN)
-    )
+    # Select genes based on chosen source
+    if (input$heatmapGeneSource == "de") {
+      # --- Top DE genes (contrast-dependent) ---
+      res_df <- as.data.frame(res)
+      res_df$abs_lfc <- abs(res_df$log2FoldChange)
+      res_df$abs_stat <- abs(res_df$stat)
+      
+      top_genes <- switch(input$heatmapSortBy,
+                          "padj"     = head(rownames(res_df[order(res_df$padj, na.last = TRUE), ]), input$heatmapTopN),
+                          "abs_lfc"  = head(rownames(res_df[order(res_df$abs_lfc, decreasing = TRUE, na.last = TRUE), ]), input$heatmapTopN),
+                          "abs_stat" = head(rownames(res_df[order(res_df$abs_stat, decreasing = TRUE, na.last = TRUE), ]), input$heatmapTopN)
+      )
+      
+      heatmap_title <- paste("Top", length(top_genes[!is.na(top_genes)]), "DE genes —",
+                             switch(input$heatmapSortBy,
+                                    "padj"     = "sorted by adjusted p-value",
+                                    "abs_lfc"  = "sorted by absolute log2 fold change",
+                                    "abs_stat" = "sorted by absolute test statistic"))
+      
+    } else {
+      # --- Most variable genes (contrast-independent) ---
+      row_vars <- apply(mat, 1, var)
+      row_vars <- sort(row_vars, decreasing = TRUE)
+      n_genes  <- min(input$heatmapTopN, length(row_vars))
+      top_genes <- names(row_vars)[seq_len(n_genes)]
+      
+      heatmap_title <- paste("Top", n_genes, "most variable genes (by variance across all samples)")
+    }
     
     # Remove any NA gene names
     top_genes <- top_genes[!is.na(top_genes)]
@@ -1692,11 +1718,7 @@ server <- function(input, output, session) {
       annotation_col = sample_annotation,
       annotation_colors = annotation_colors,
       color = colors,
-      main = paste("Top", length(top_genes), "DE genes -", 
-                   switch(input$heatmapSortBy,
-                          "padj" = "sorted by adjusted p-value",
-                          "abs_lfc" = "sorted by absolute log2 fold change", 
-                          "abs_stat" = "sorted by absolute test statistic")),
+      main = heatmap_title,
       fontsize = 10,
       fontsize_row = if (input$heatmapShowRowNames && length(top_genes) > 50) 6 else 8,
       fontsize_col = if (input$heatmapShowColNames) 8 else 8
