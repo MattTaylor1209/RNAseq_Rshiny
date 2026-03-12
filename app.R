@@ -2995,28 +2995,25 @@ server <- function(input, output, session) {
     req(vennSets())
     gs <- vennSets()$genesets
     nms <- names(gs)
-    n   <- length(nms)
     
-    # Build choices: shared (all), unique to each, and intersection pairs
-    choices <- c()
-    # Shared across ALL
-    choices["Shared across ALL contrasts"] <- "ALL_SHARED"
-    # Unique to each
-    for (nm in nms) {
-      choices[paste0("Unique to: ", nm)] <- paste0("UNIQUE__", nm)
-    }
-    # Pairwise intersections (if >2 contrasts)
-    if (n > 2) {
-      pairs <- combn(nms, 2, simplify = FALSE)
-      for (p in pairs) {
-        lbl <- paste0("Shared between: ", paste(p, collapse = " & "))
-        choices[lbl] <- paste0("PAIR__", paste(p, collapse = "|||"))
-      }
-    }
     tagList(
-      selectInput("vennSetChoice", "Select gene set:", choices = choices, selected = "ALL_SHARED"),
+      radioButtons("vennSetMode", "Gene set type:",
+                   choices = c("Shared across ALL contrasts" = "all_shared",
+                               "Shared between selected contrasts" = "selected_shared",
+                               "Unique to one contrast" = "unique"),
+                   selected = "all_shared"),
       conditionalPanel(
-        condition = "!input.vennSetChoice.startsWith('UNIQUE__')",
+        condition = "input.vennSetMode == 'selected_shared'",
+        checkboxGroupInput("vennSharedContrasts", "Select contrasts (2 or more):",
+                           choices = nms, selected = nms[1:min(2, length(nms))]),
+        helpText("Genes must be significant in ALL ticked contrasts and in NONE of the unticked contrasts (exclusive overlap).")
+      ),
+      conditionalPanel(
+        condition = "input.vennSetMode == 'unique'",
+        selectInput("vennUniqueContrast", "Unique to:", choices = nms, selected = nms[1])
+      ),
+      conditionalPanel(
+        condition = "input.vennSetMode != 'unique'",
         selectInput("vennConcordance", "Direction filter (shared sets):",
                     choices = c(
                       "All shared (average stats)"     = "all",
@@ -3028,6 +3025,23 @@ server <- function(input, output, session) {
         helpText("Concordant: gene goes same direction in every relevant contrast.")
       )
     )
+  })
+  
+  # Reactive to build the choice string from the new UI inputs
+  vennSetChoice <- reactive({
+    mode <- input$vennSetMode
+    if (is.null(mode)) return(NULL)
+    if (mode == "all_shared") return("ALL_SHARED")
+    if (mode == "unique") {
+      req(input$vennUniqueContrast)
+      return(paste0("UNIQUE__", input$vennUniqueContrast))
+    }
+    if (mode == "selected_shared") {
+      sel <- input$vennSharedContrasts
+      validate(need(length(sel) >= 2, "Please select at least 2 contrasts."))
+      return(paste0("PAIR__", paste(sel, collapse = "|||")))
+    }
+    NULL
   })
   
   # Helper to extract genes for a region choice
@@ -3143,7 +3157,8 @@ server <- function(input, output, session) {
     vs       <- vennSets()
     gs       <- vs$genesets
     sig_dfs  <- vs$sig_dfs
-    choice   <- input$vennSetChoice
+    choice   <- vennSetChoice()
+    req(choice)
     chosen_genes <- extract_venn_genes(gs, choice)
     
     if (length(chosen_genes) == 0) {
@@ -3373,19 +3388,25 @@ server <- function(input, output, session) {
     req(vennSets())
     gs  <- vennSets()$genesets
     nms <- names(gs)
-    choices <- c("ALL SHARED" = "ALL_SHARED")
-    for (nm in nms) choices[paste0("Unique to: ", nm)] <- paste0("UNIQUE__", nm)
-    if (length(nms) > 2) {
-      pairs <- combn(nms, 2, simplify = FALSE)
-      for (p in pairs) {
-        lbl <- paste("Shared:", paste(p, collapse = " & "))
-        choices[lbl] <- paste0("PAIR__", paste(p, collapse = "|||"))
-      }
-    }
+    
     tagList(
-      selectInput("dsSetChoice", "Analyse gene set:", choices = choices, selected = "ALL_SHARED"),
+      radioButtons("dsSetMode", "Gene set type:",
+                   choices = c("Shared across ALL contrasts" = "all_shared",
+                               "Shared between selected contrasts" = "selected_shared",
+                               "Unique to one contrast" = "unique"),
+                   selected = "all_shared"),
       conditionalPanel(
-        condition = "!input.dsSetChoice.startsWith('UNIQUE__')",
+        condition = "input.dsSetMode == 'selected_shared'",
+        checkboxGroupInput("dsSharedContrasts", "Select contrasts (2 or more):",
+                           choices = nms, selected = nms[1:min(2, length(nms))]),
+        helpText("Exclusive overlap: genes in ALL ticked contrasts and NONE of the unticked.")
+      ),
+      conditionalPanel(
+        condition = "input.dsSetMode == 'unique'",
+        selectInput("dsUniqueContrast", "Unique to:", choices = nms, selected = nms[1])
+      ),
+      conditionalPanel(
+        condition = "input.dsSetMode != 'unique'",
         selectInput("dsConcordance", "Direction filter for downstream analyses:",
                     choices = c(
                       "All shared (average stats)"        = "all",
@@ -3398,6 +3419,23 @@ server <- function(input, output, session) {
       ),
       p(em("Tip: load genes above first to preview concordance before running analyses."))
     )
+  })
+  
+  # Reactive to build the choice string from the downstream UI inputs
+  dsSetChoice <- reactive({
+    mode <- input$dsSetMode
+    if (is.null(mode)) return(NULL)
+    if (mode == "all_shared") return("ALL_SHARED")
+    if (mode == "unique") {
+      req(input$dsUniqueContrast)
+      return(paste0("UNIQUE__", input$dsUniqueContrast))
+    }
+    if (mode == "selected_shared") {
+      sel <- input$dsSharedContrasts
+      validate(need(length(sel) >= 2, "Please select at least 2 contrasts."))
+      return(paste0("PAIR__", paste(sel, collapse = "|||")))
+    }
+    NULL
   })
   
   # Helper: get ENTREZ IDs for a selected Venn region
@@ -3465,7 +3503,7 @@ server <- function(input, output, session) {
   observeEvent(input$runCmpGOBtn, {
     req(vennSets(), analysisResults())
     withProgress(message = "Running GO on selected gene set...", value = 0, {
-      info <- get_entrez_for_set(input$dsSetChoice)
+      info <- get_entrez_for_set(dsSetChoice())
       sp   <- isolate(goSpeciesCode())
       
       universe_entrez <- analysisResults()$res_entrez$ENTREZID
@@ -3494,7 +3532,7 @@ server <- function(input, output, session) {
           geom_bar(stat = "identity", fill = "#638475") +
           coord_flip() + theme_minimal() +
           labs(x = "GO Term", y = "-log10(p-value)",
-               title = paste("GO", input$cmpGOont, "–", input$dsSetChoice))
+               title = paste("GO", input$cmpGOont, "–", dsSetChoice()))
       })
       
       output$cmpGOtable <- DT::renderDataTable({
@@ -3514,7 +3552,7 @@ server <- function(input, output, session) {
   observeEvent(input$runCmpGseaBtn, {
     req(vennSets(), analysisResults())
     withProgress(message = "Running GSEA on selected gene set...", value = 0, {
-      info       <- get_entrez_for_set(input$dsSetChoice)
+      info       <- get_entrez_for_set(dsSetChoice())
       orgdb_name <- isolate(input$organism)
       orgdb      <- get(orgdb_name)
       
@@ -3642,7 +3680,7 @@ server <- function(input, output, session) {
   observeEvent(input$runCmpGageBtn, {
     req(vennSets(), analysisResults())
     withProgress(message = "Running GAGE on selected gene set...", value = 0, {
-      info       <- get_entrez_for_set(input$dsSetChoice)
+      info       <- get_entrez_for_set(dsSetChoice())
       orgdb_name <- isolate(input$organism)
       
       # Choose KEGG prefix
