@@ -660,7 +660,35 @@ ui <- fluidPage(
                             actionButton("runCmpGOBtn", "Run GO", icon = icon("dna")),
                             hr(),
                             h5("GSEA"),
-                            selectInput("cmpGseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP"),
+                            selectInput("cmpGseaType", "Pathways to analyse:",
+                                        choices = c("GO", "Wiki Pathways", "KEGG"),
+                                        selected = "GO"),
+                            conditionalPanel(
+                              condition = "input.cmpGseaType == 'Wiki Pathways'",
+                              selectInput("cmpWikiorg", "Select Wiki Pathways Organism",
+                                          choices = c("Homo sapiens",
+                                                      "Mus musculus",
+                                                      "Drosophila melanogaster",
+                                                      "Rattus norvegicus",
+                                                      "Danio rerio"),
+                                          selected = "Drosophila melanogaster")
+                            ),
+                            conditionalPanel(
+                              condition = "input.cmpGseaType == 'KEGG'",
+                              selectInput("cmpKeggorg", "Select KEGG Organism",
+                                          choices = c(
+                                            "Human (Homo sapiens)" = "hsa",
+                                            "Mouse (Mus musculus)" = "mmu",
+                                            "Rat (Rattus norvegicus)" = "rno",
+                                            "Drosophila (Drosophila melanogaster)" = "dme",
+                                            "Zebrafish (Danio rerio)" = "dre"
+                                          ),
+                                          selected = "dme")
+                            ),
+                            conditionalPanel(
+                              condition = "input.cmpGseaType == 'GO'",
+                              selectInput("cmpGseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP")
+                            ),
                             selectInput("cmpGseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
                             numericInput("cmpGseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
                             numericInput("cmpGseaMin", "Min gene set size", value = 10, min = 5, step = 5),
@@ -3416,25 +3444,82 @@ server <- function(input, output, session) {
       m <- tapply(m, names(m), max)
       m <- sort(setNames(as.vector(m), names(m)), decreasing = TRUE)
       
-      gse <- clusterProfiler::gseGO(
-        geneList     = m,
-        OrgDb        = orgdb,
-        keyType      = "ENTREZID",
-        ont          = input$cmpGseaOnt,
-        minGSSize    = input$cmpGseaMin,
-        maxGSSize    = input$cmpGseaMax,
-        pvalueCutoff = input$cmpGseaP,
-        verbose      = FALSE
-      )
+      validate(need(length(m) >= input$cmpGseaMin,
+                    "Not enough ranked genes to run GSEA."))
+      
+      # Run the appropriate GSEA — each branch wrapped in tryCatch
+      gse <- NULL
+      
+      if (input$cmpGseaType == "GO") {
+        gse <- tryCatch({
+          clusterProfiler::gseGO(
+            geneList     = m,
+            OrgDb        = orgdb,
+            keyType      = "ENTREZID",
+            ont          = input$cmpGseaOnt,
+            minGSSize    = input$cmpGseaMin,
+            maxGSSize    = input$cmpGseaMax,
+            pvalueCutoff = input$cmpGseaP,
+            verbose      = FALSE
+          )
+        }, error = function(e) {
+          showNotification(paste("GO GSEA failed:", e$message),
+                           type = "error", duration = NULL)
+          NULL
+        })
+        
+      } else if (input$cmpGseaType == "Wiki Pathways") {
+        validate(need(nzchar(input$cmpWikiorg),
+                      "Please select an organism for WikiPathways."))
+        gse <- tryCatch({
+          clusterProfiler::gseWP(
+            geneList     = m,
+            organism     = input$cmpWikiorg,
+            minGSSize    = input$cmpGseaMin,
+            maxGSSize    = input$cmpGseaMax,
+            pvalueCutoff = input$cmpGseaP,
+            verbose      = FALSE
+          )
+        }, error = function(e) {
+          showNotification(paste("WikiPathways GSEA failed:", e$message),
+                           type = "error", duration = NULL)
+          NULL
+        })
+        
+      } else if (input$cmpGseaType == "KEGG") {
+        gse <- tryCatch({
+          clusterProfiler::gseKEGG(
+            geneList     = m,
+            organism     = input$cmpKeggorg,
+            keyType      = "ncbi-geneid",
+            minGSSize    = input$cmpGseaMin,
+            maxGSSize    = input$cmpGseaMax,
+            pvalueCutoff = input$cmpGseaP,
+            verbose      = FALSE
+          )
+        }, error = function(e) {
+          showNotification(paste("KEGG GSEA failed:", e$message),
+                           type = "error", duration = NULL)
+          NULL
+        })
+      }
+      
+      # Store result (possibly NULL) in reactiveVal
       cmpGseaRes(gse)
       
-      df <- as.data.frame(gse)
-      updateSelectizeInput(session, "cmpGseaTerm",
-                           choices = df$ID, selected = head(df$ID, 1), server = TRUE)
+      # Update term selector only if we have results
+      if (!is.null(gse)) {
+        df <- as.data.frame(gse)
+        updateSelectizeInput(session, "cmpGseaTerm",
+                             choices = df$ID, selected = head(df$ID, 1), server = TRUE)
+        showNotification("GSEA complete.", type = "message")
+      } else {
+        updateSelectizeInput(session, "cmpGseaTerm", choices = NULL)
+      }
       
       output$cmpGseaDotplot <- renderPlot({
         gse_local <- cmpGseaRes()
-        req(gse_local)
+        validate(need(!is.null(gse_local), "No GSEA results to display."))
         df_check <- as.data.frame(gse_local)
         validate(need(nrow(df_check) > 0, "No significant GSEA terms found."))
         n_show <- min(input$cmpGseaNum, nrow(df_check))
@@ -3442,7 +3527,10 @@ server <- function(input, output, session) {
       })
       output$cmpGseaEnrichPlot <- renderPlot({
         gse_local <- cmpGseaRes()
-        req(gse_local, input$cmpGseaTerm)
+        validate(
+          need(!is.null(gse_local), "No GSEA results to display."),
+          need(input$cmpGseaTerm, "Select a term to display.")
+        )
         df_check <- as.data.frame(gse_local)
         validate(need(nrow(df_check) > 0, "No significant GSEA terms found."))
         validate(need(input$cmpGseaTerm %in% df_check$ID, "Selected term not found in results."))
@@ -3450,15 +3538,18 @@ server <- function(input, output, session) {
       })
       output$cmpGseaTable <- DT::renderDataTable({
         gse_local <- cmpGseaRes()
-        req(gse_local)
+        validate(need(!is.null(gse_local), "No GSEA results to display."))
         DT::datatable(as.data.frame(gse_local), options = list(pageLength = 10))
       })
       output$dl_cmp_gsea <- downloadHandler(
         filename = function() paste0("cmp_GSEA_", Sys.Date(), ".csv"),
-        content  = function(f) readr::write_csv(as.data.frame(req(cmpGseaRes())), f)
+        content  = function(f) {
+          gse_local <- cmpGseaRes()
+          if (is.null(gse_local)) return()
+          readr::write_csv(as.data.frame(gse_local), f)
+        }
       )
       incProgress(0.9)
-      showNotification("GSEA complete.", type = "message")
     })
   })
   
