@@ -312,7 +312,7 @@ ui <- fluidPage(
                      condition = "output.analysisReady",
                      downloadButton("dl_res", "Download DE table")
                    )
-                   ),
+          ),
           tabPanel("Heatmap",
                    fluidRow(
                      column(3,
@@ -423,7 +423,7 @@ ui <- fluidPage(
                             numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
                             numericInput("numcategories", "No. of categories to show", value = 10, min = 1, step = 1),
                             actionButton("runGSEA", "Run GSEA"),
-                            ),
+                     ),
                      column(8,
                             plotOutput("gseaDotplot"),
                             selectizeInput("gseaTerm", "Show enrichment plot for:", choices = NULL, multiple = FALSE),
@@ -1678,56 +1678,83 @@ server <- function(input, output, session) {
       validate(need(length(m) >= input$gseaMin,
                     "Not enough ranked genes to run GSEA."))
       
-      # Run the appropriate gse function
+      # Run the appropriate gse function — each branch wrapped in tryCatch
+      # so the eventReactive ALWAYS returns a value (result or NULL).
       
-      if(input$gsea_type == "GO") {
-        gse <- clusterProfiler::gseGO(
-          geneList     = m,
-          OrgDb        = orgdb,
-          keyType      = "ENTREZID",
-          ont          = input$gseaOnt,
-          minGSSize    = input$gseaMin,
-          maxGSSize    = input$gseaMax,
-          pvalueCutoff = input$gseaP,
-          verbose      = TRUE
-        )
-      }
-    
-      else if(input$gsea_type == "Wiki Pathways"){
-        gse <- clusterProfiler::gseWP(
-          geneList     = m,
-          organism     = input$wikiorg,
-          minGSSize    = input$gseaMin,
-          maxGSSize    = input$gseaMax,
-          pvalueCutoff = input$gseaP,
-          verbose      = TRUE
-        )
-      }
+      gse <- NULL
       
-      else if(input$gsea_type == "KEGG"){
-        gse <- clusterProfiler::gseKEGG(
-          geneList     = m,
-          organism     = input$keggorg,
-          keyType = "ncbi-geneid",
-          minGSSize    = input$gseaMin,
-          maxGSSize    = input$gseaMax,
-          pvalueCutoff = input$gseaP,
-          verbose      = TRUE
-        )
+      if (input$gsea_type == "GO") {
+        gse <- tryCatch({
+          clusterProfiler::gseGO(
+            geneList     = m,
+            OrgDb        = orgdb,
+            keyType      = "ENTREZID",
+            ont          = input$gseaOnt,
+            minGSSize    = input$gseaMin,
+            maxGSSize    = input$gseaMax,
+            pvalueCutoff = input$gseaP,
+            verbose      = TRUE
+          )
+        }, error = function(e) {
+          showNotification(paste("GO GSEA failed:", e$message),
+                           type = "error", duration = NULL)
+          NULL
+        })
+        
+      } else if (input$gsea_type == "Wiki Pathways") {
+        validate(need(nzchar(input$wikiorg),
+                      "Please select an organism for WikiPathways."))
+        gse <- tryCatch({
+          clusterProfiler::gseWP(
+            geneList     = m,
+            organism     = input$wikiorg,
+            minGSSize    = input$gseaMin,
+            maxGSSize    = input$gseaMax,
+            pvalueCutoff = input$gseaP,
+            verbose      = TRUE
+          )
+        }, error = function(e) {
+          showNotification(paste("WikiPathways GSEA failed:", e$message),
+                           type = "error", duration = NULL)
+          NULL
+        })
+        
+      } else if (input$gsea_type == "KEGG") {
+        gse <- tryCatch({
+          clusterProfiler::gseKEGG(
+            geneList     = m,
+            organism     = input$keggorg,
+            keyType      = "ncbi-geneid",
+            minGSSize    = input$gseaMin,
+            maxGSSize    = input$gseaMax,
+            pvalueCutoff = input$gseaP,
+            verbose      = TRUE
+          )
+        }, error = function(e) {
+          showNotification(paste("KEGG GSEA failed:", e$message),
+                           type = "error", duration = NULL)
+          NULL
+        })
       }
-      
       
       incProgress(0.8)
-      appendLog("GSEA analysis complete.")
-      showNotification("GSEA analysis complete.", type="message")
       
+      if (!is.null(gse)) {
+        appendLog("GSEA analysis complete.")
+        showNotification("GSEA analysis complete.", type = "message")
+      } else {
+        appendLog("GSEA analysis failed — see notification for details.")
+      }
       
+      # Always return gse (possibly NULL) so the reactive has a value
       gse
     })
   })
   
   observeEvent(gseaResults(), {
-    df <- as.data.frame(gseaResults())
+    gse <- gseaResults()
+    if (is.null(gse)) return()
+    df <- as.data.frame(gse)
     updateSelectizeInput(
       session, "gseaTerm",
       choices  = df$ID,
@@ -1749,20 +1776,31 @@ server <- function(input, output, session) {
   
   
   output$gseaEnrichPlot <- renderPlot({
-    req(gseaResults(), input$gseaTerm)
-    enrichplot::gseaplot2(gseaResults(), geneSetID = input$gseaTerm, title = input$gseaTerm)
+    gseres <- gseaResults()
+    validate(
+      need(!is.null(gseres), "No GSEA results to display."),
+      need(input$gseaTerm, "Select a term to display.")
+    )
+    df_check <- as.data.frame(gseres)
+    validate(need(input$gseaTerm %in% df_check$ID, "Selected term not found in results."))
+    enrichplot::gseaplot2(gseres, geneSetID = input$gseaTerm, title = input$gseaTerm)
   })
   
   output$gseaTable <- DT::renderDataTable({
-    req(gseaResults())
-    DT::datatable(as.data.frame(gseaResults()),
+    gseres <- gseaResults()
+    validate(need(!is.null(gseres), "No GSEA results to display."))
+    DT::datatable(as.data.frame(gseres),
                   extensions = "Buttons",
                   options = list(dom = "Bfrtip", buttons = c("copy","csv")))
   })
   
   output$dl_gsea <- downloadHandler(
     filename = function() "gsea_results.csv",
-    content  = function(f) readr::write_csv(as.data.frame(gseaResults()), f)
+    content  = function(f) {
+      gse <- gseaResults()
+      if (is.null(gse)) return()
+      readr::write_csv(as.data.frame(gse), f)
+    }
   )
   
   ###---GO---###
