@@ -2500,21 +2500,22 @@ server <- function(input, output, session) {
     )
     
     # Compute -log10 metrics, handling padj/pvalue == 0
+    # Only genes with literal zero p-values are "capped" (their displayed value is
+    # a substitute). Genuinely very significant genes are plotted at their real values.
+    padj_was_zero <- !is.na(res_df$padj) & res_df$padj == 0
+    p_was_zero    <- !is.na(res_df$pvalue) & res_df$pvalue == 0
+    
     min_nonzero_padj <- min(res_df$padj[res_df$padj > 0], na.rm = TRUE)
     min_nonzero_p    <- min(res_df$pvalue[res_df$pvalue > 0], na.rm = TRUE)
     
-    res_df$log10padj <- -log10(ifelse(res_df$padj == 0, min_nonzero_padj, res_df$padj))
-    res_df$log10p    <- -log10(ifelse(res_df$pvalue == 0, min_nonzero_p, res_df$pvalue))
+    res_df$log10padj <- -log10(ifelse(padj_was_zero, min_nonzero_padj, res_df$padj))
+    res_df$log10p    <- -log10(ifelse(p_was_zero, min_nonzero_p, res_df$pvalue))
     
-    # Cap at 99.9th percentile to prevent axis stretching
-    y_col_name <- if (isTRUE(input$pvalueselect)) "log10padj" else "log10p"
-    y_cap <- quantile(res_df[[y_col_name]], 0.999, na.rm = TRUE)
-    res_df$capped <- !is.na(res_df[[y_col_name]]) & res_df[[y_col_name]] > y_cap
-    res_df$log10padj <- pmin(res_df$log10padj, quantile(res_df$log10padj, 0.999, na.rm = TRUE))
-    res_df$log10p    <- pmin(res_df$log10p, quantile(res_df$log10p, 0.999, na.rm = TRUE))
+    # Flag only true-zero substitutions as capped
+    use_padj <- isTRUE(input$pvalueselect)
+    res_df$capped <- if (use_padj) padj_was_zero else p_was_zero
     
     # Decide which p column is active
-    use_padj <- isTRUE(input$pvalueselect)  # TRUE -> use padj; FALSE -> use pvalue
     p_col    <- if (use_padj) "padj" else "pvalue"
     y_col    <- if (use_padj) "log10padj" else "log10p"
     y_lab    <- if (use_padj) "-Log10 Adjusted P-value" else "-Log10 P-value"
@@ -2553,10 +2554,16 @@ server <- function(input, output, session) {
     )
     
     ggplot(res_df, aes(x = log2FoldChange, y = .data[[y_col]])) +
-      geom_point(aes(color = significance, shape = capped), size = input$volcpointsize) +
-      scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
-                         labels = c("FALSE" = "Within range", "TRUE" = "Capped"),
-                         guide = guide_legend(title = NULL)) +
+      {if (any(res_df$capped, na.rm = TRUE))
+        list(
+          geom_point(aes(color = significance, shape = capped), size = input$volcpointsize),
+          scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
+                             labels = c("FALSE" = "Within range", "TRUE" = "Capped (p = 0)"),
+                             guide = guide_legend(title = NULL))
+        )
+        else
+          geom_point(aes(color = significance), size = input$volcpointsize)
+      } +
       scale_color_manual(values = volcano_colors) +
       theme_minimal() +
       theme(
@@ -3334,17 +3341,14 @@ server <- function(input, output, session) {
       res_c <- res_c[!is.na(res_c$padj) & !is.na(res_c$log2FoldChange), ]
       res_c$GeneID <- rownames(res_c)
       
-      # Compute -log10(padj) with capping for extreme values
-      # Replace padj == 0 with the smallest non-zero padj so -log10 is finite
+      # Compute -log10(padj), handling padj == 0
+      # Only genes with literal zero p-values get a substitute value and the "capped" flag
+      padj_was_zero <- res_c$padj == 0
       min_nonzero_padj <- min(res_c$padj[res_c$padj > 0], na.rm = TRUE)
-      res_c$padj_safe <- ifelse(res_c$padj == 0, min_nonzero_padj, res_c$padj)
+      res_c$padj_safe <- ifelse(padj_was_zero, min_nonzero_padj, res_c$padj)
       res_c$neg_log10_padj <- -log10(res_c$padj_safe)
-      
-      # Cap at a sensible ceiling and flag capped genes with a different shape
-      y_cap <- quantile(res_c$neg_log10_padj, 0.999)
-      y_cap <- max(y_cap, -log10(spec$padj) + 10)  # ensure cap is above the significance line
-      res_c$capped <- res_c$neg_log10_padj > y_cap
-      res_c$neg_log10_padj_plot <- pmin(res_c$neg_log10_padj, y_cap)
+      res_c$neg_log10_padj_plot <- res_c$neg_log10_padj
+      res_c$capped <- padj_was_zero
       
       # Determine shared vs unique membership with concordance for shared genes.
       # The context (input$vennVolcContext) controls which contrasts count as "other":
@@ -3434,10 +3438,16 @@ server <- function(input, output, session) {
       cat_colors[unique_col_name] <- "#f4a736"
       
       ggplot(res_c, aes(x = log2FoldChange, y = neg_log10_padj_plot, colour = Category, label = label)) +
-        geom_point(aes(shape = capped), size = input$cmpVolcPtSz, alpha = 0.7) +
-        scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
-                           labels = c("FALSE" = "Within range", "TRUE" = "Capped (more significant)"),
-                           guide = guide_legend(title = NULL, order = 2)) +
+        {if (any(res_c$capped, na.rm = TRUE))
+          list(
+            geom_point(aes(shape = capped), size = input$cmpVolcPtSz, alpha = 0.7),
+            scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
+                               labels = c("FALSE" = "Within range", "TRUE" = "Capped (p = 0)"),
+                               guide = guide_legend(title = NULL, order = 2))
+          )
+          else
+            geom_point(size = input$cmpVolcPtSz, alpha = 0.7)
+        } +
         ggrepel::geom_text_repel(size = 3, max.overlaps = 20, show.legend = FALSE) +
         scale_colour_manual(values = cat_colors) +
         geom_vline(xintercept = c(-spec$lfc, spec$lfc), linetype = "dashed", colour = "grey40") +
