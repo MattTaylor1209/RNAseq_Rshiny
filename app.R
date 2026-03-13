@@ -661,38 +661,75 @@ ui <- fluidPage(
                    ),
                    hr(),
                    
-                   # --- Interaction Contrast (Difference of Differences) ---
+                   # --- Interaction / Custom Contrast ---
                    fluidRow(
                      column(12,
-                            h4("Interaction Contrast (Difference of Differences)"),
-                            p("Formally test whether the effect of one factor depends on another.",
-                              "E.g.,: does the genotype effect differ between food conditions?",
-                              "This computes (Effect 1) \u2212 (Effect 2) as a single statistical test.",
-
+                            h4("Interaction & Custom Contrasts"),
+                            p("Test interactions or build any arbitrary contrast from your group levels.",
                               tags$br(),
-                              tags$em("Genes that are significant here have a genuinely different response",
-                                      "between the two effects — not merely 'significant in one and not the other'.")))
+                              tags$b("Pairwise interaction:"), " tests whether one effect differs from another (difference of differences).",
+                              tags$br(),
+                              tags$b("Custom contrast:"), " assign numeric weights to each group level for any linear contrast.",
+                              " Weights must sum to zero. For example, an epistasis/non-additivity test for",
+                              " RNAi_A, RNAi_B, RNAi_AB, and Control would use weights: AB = +1, A = \u22121, B = \u22121, Control = +1."))
                    ),
                    fluidRow(
                      column(3,
-                            wellPanel(
-                              h5("Effect 1"),
-                              helpText("e.g. the effect of food in genotype A"),
-                              uiOutput("ixnNum1UI"),
-                              uiOutput("ixnDen1UI")
+                            radioButtons("ixnMode", "Contrast mode:",
+                                         choices = c("Pairwise interaction (2 effects)" = "pairwise",
+                                                     "Custom contrast (any weights)" = "custom"),
+                                         selected = "pairwise"),
+                            
+                            # --- Pairwise mode controls ---
+                            conditionalPanel(
+                              condition = "input.ixnMode == 'pairwise'",
+                              wellPanel(
+                                h5("Effect 1"),
+                                helpText("e.g. the effect of food in genotype A"),
+                                uiOutput("ixnNum1UI"),
+                                uiOutput("ixnDen1UI")
+                              ),
+                              wellPanel(
+                                h5("Effect 2 (subtracted from Effect 1)"),
+                                helpText("e.g. the effect of food in genotype B"),
+                                uiOutput("ixnNum2UI"),
+                                uiOutput("ixnDen2UI")
+                              )
                             ),
-                            wellPanel(
-                              h5("Effect 2 (subtracted from Effect 1)"),
-                              helpText("e.g. the effect of food in genotype B"),
-                              uiOutput("ixnNum2UI"),
-                              uiOutput("ixnDen2UI")
+                            
+                            # --- Custom mode controls ---
+                            conditionalPanel(
+                              condition = "input.ixnMode == 'custom'",
+                              wellPanel(
+                                h5("Group weights"),
+                                helpText("Assign a numeric weight to each group level.",
+                                         "Weights must sum to zero for a valid contrast.",
+                                         "Groups with weight 0 are excluded."),
+                                uiOutput("ixnCustomWeightsUI"),
+                                textOutput("ixnWeightSum")
+                              ),
+                              wellPanel(
+                                h5("Reference group for individual LFCs"),
+                                helpText("Each group's LFC will be shown relative to this group",
+                                         "(e.g. select your control)."),
+                                uiOutput("ixnRefGroupUI")
+                              ),
+                              wellPanel(
+                                h5("Presets"),
+                                helpText("Auto-fill weights for common designs:"),
+                                uiOutput("ixnPresetUI"),
+                                actionButton("ixnApplyPresetBtn", "Apply preset",
+                                             icon = icon("magic"))
+                              )
                             ),
+                            
+                            # --- Shared controls ---
                             numericInput("ixnPadj", "Adj. p-value threshold", value = 0.05,
                                          min = 0, max = 1, step = 0.01),
-                            numericInput("ixnLFC", "LFC threshold (on interaction effect)",
+                            numericInput("ixnLFC", "LFC threshold",
                                          value = 0, min = 0, step = 0.1),
                             sliderInput("ixnVolcTop", "Top genes to label", 1, 80, 20, step = 1),
-                            actionButton("runIxnBtn", "Run Interaction Test",
+                            actionButton("runIxnBtn", "Run Contrast Test",
                                          icon = icon("not-equal")),
                             br(), br(),
                             downloadButton("dl_ixn", "Download results CSV")
@@ -711,7 +748,7 @@ ui <- fluidPage(
                    
                    # --- Gene tables from Venn regions ---
                    fluidRow(
-                     column(12, h4("Explore Gene Sets from Venn Diagram"))
+                     column(12, h4("Explore Gene Sets from Diagram"))
                    ),
                    fluidRow(
                      column(4,
@@ -4409,9 +4446,9 @@ server <- function(input, output, session) {
     }
   )
   
-  # ---- Interaction Contrast (Difference of Differences) ----
+  # ---- Interaction / Custom Contrast ----
   
-  # Dynamic UI for the four group selectors
+  # Dynamic UI for the four group selectors (pairwise mode)
   output$ixnNum1UI <- renderUI({
     req(input$groupOrder)
     selectInput("ixnNum1", "Numerator:", choices = input$groupOrder)
@@ -4429,62 +4466,227 @@ server <- function(input, output, session) {
     selectInput("ixnDen2", "Denominator:", choices = input$groupOrder)
   })
   
-  # Show the contrast formula in plain English
+  # --- Custom contrast: dynamic weight inputs ---
+  output$ixnCustomWeightsUI <- renderUI({
+    req(input$groupOrder)
+    grps <- input$groupOrder
+    weight_inputs <- lapply(grps, function(g) {
+      input_id <- paste0("ixnW_", make.names(g))
+      numericInput(input_id, label = g, value = 0, step = 1)
+    })
+    do.call(tagList, weight_inputs)
+  })
+  
+  # Helper: read current custom weights
+  get_custom_weights <- reactive({
+    req(input$groupOrder)
+    grps <- input$groupOrder
+    w <- sapply(grps, function(g) {
+      id <- paste0("ixnW_", make.names(g))
+      val <- input[[id]]
+      if (is.null(val) || !is.finite(val)) 0 else val
+    })
+    setNames(w, grps)
+  })
+  
+  # Show weight sum
+  output$ixnWeightSum <- renderText({
+    w <- get_custom_weights()
+    s <- sum(w)
+    if (abs(s) < 1e-10) {
+      "Weights sum to 0 \u2714"
+    } else {
+      paste0("WARNING: Weights sum to ", round(s, 4), " (must be 0)")
+    }
+  })
+  
+  # Reference group selector for individual LFC columns
+  output$ixnRefGroupUI <- renderUI({
+    req(input$groupOrder)
+    selectInput("ixnRefGroup", "Reference group:",
+                choices = input$groupOrder,
+                selected = tail(input$groupOrder, 1))
+  })
+  
+  # --- Presets ---
+  output$ixnPresetUI <- renderUI({
+    req(input$groupOrder)
+    n <- length(input$groupOrder)
+    presets <- c("Epistasis / Non-additivity (4 groups)" = "epistasis")
+    if (n >= 3) {
+      presets <- c(presets,
+                   "One vs average of others" = "one_vs_rest")
+    }
+    tagList(
+      selectInput("ixnPreset", "Preset:", choices = presets),
+      conditionalPanel(
+        condition = "input.ixnPreset == 'epistasis'",
+        helpText("Select which group is which:"),
+        uiOutput("ixnEpistasisUI")
+      ),
+      conditionalPanel(
+        condition = "input.ixnPreset == 'one_vs_rest'",
+        helpText("Select the focal group (gets weight +1, others get \u22121/(n\u22121)):"),
+        uiOutput("ixnOneVsRestUI")
+      )
+    )
+  })
+  
+  output$ixnEpistasisUI <- renderUI({
+    req(input$groupOrder)
+    grps <- input$groupOrder
+    tagList(
+      selectInput("ixnEpiAB", "Combined (A+B):", choices = grps),
+      selectInput("ixnEpiA",  "Single A:", choices = grps),
+      selectInput("ixnEpiB",  "Single B:", choices = grps),
+      selectInput("ixnEpiCtrl", "Control:", choices = grps)
+    )
+  })
+  
+  output$ixnOneVsRestUI <- renderUI({
+    req(input$groupOrder)
+    selectInput("ixnFocalGroup", "Focal group:", choices = input$groupOrder)
+  })
+  
+  # Apply preset
+  observeEvent(input$ixnApplyPresetBtn, {
+    req(input$groupOrder, input$ixnPreset)
+    grps <- input$groupOrder
+    
+    if (input$ixnPreset == "epistasis") {
+      req(input$ixnEpiAB, input$ixnEpiA, input$ixnEpiB, input$ixnEpiCtrl)
+      chosen <- c(input$ixnEpiAB, input$ixnEpiA, input$ixnEpiB, input$ixnEpiCtrl)
+      if (length(unique(chosen)) < 4) {
+        showNotification("All four groups must be different.", type = "error")
+        return()
+      }
+      for (g in grps) {
+        id <- paste0("ixnW_", make.names(g))
+        val <- if (g == input$ixnEpiAB) 1
+        else if (g == input$ixnEpiA) -1
+        else if (g == input$ixnEpiB) -1
+        else if (g == input$ixnEpiCtrl) 1
+        else 0
+        updateNumericInput(session, id, value = val)
+      }
+      showNotification("Epistasis weights applied: AB(+1), A(\u22121), B(\u22121), Ctrl(+1)",
+                       type = "message")
+      # Auto-set reference group to the control
+      updateSelectInput(session, "ixnRefGroup", selected = input$ixnEpiCtrl)
+      
+    } else if (input$ixnPreset == "one_vs_rest") {
+      req(input$ixnFocalGroup)
+      n_others <- length(grps) - 1
+      for (g in grps) {
+        id <- paste0("ixnW_", make.names(g))
+        val <- if (g == input$ixnFocalGroup) 1 else -1 / n_others
+        updateNumericInput(session, id, value = round(val, 6))
+      }
+      showNotification("One-vs-rest weights applied.", type = "message")
+    }
+  })
+  
+  # --- Formula display (adapts to mode) ---
   output$ixnFormula <- renderText({
-    req(input$ixnNum1, input$ixnDen1, input$ixnNum2, input$ixnDen2)
-    paste0("Testing: (", input$ixnNum1, " \u2212 ", input$ixnDen1,
-           ")  \u2212  (", input$ixnNum2, " \u2212 ", input$ixnDen2, ")")
+    mode <- input$ixnMode
+    if (is.null(mode)) return("")
+    
+    if (mode == "pairwise") {
+      req(input$ixnNum1, input$ixnDen1, input$ixnNum2, input$ixnDen2)
+      paste0("Testing: (", input$ixnNum1, " \u2212 ", input$ixnDen1,
+             ")  \u2212  (", input$ixnNum2, " \u2212 ", input$ixnDen2, ")")
+    } else {
+      w <- get_custom_weights()
+      non_zero <- w[w != 0]
+      if (length(non_zero) == 0) return("No weights set yet.")
+      parts <- sapply(names(non_zero), function(g) {
+        v <- non_zero[g]
+        if (v == 1) g
+        else if (v == -1) paste0("\u2212", g)
+        else if (v > 0) paste0(round(v, 3), "\u00D7", g)
+        else paste0("\u2212", round(abs(v), 3), "\u00D7", g)
+      })
+      paste0("Testing: ", paste(parts, collapse = "  +  "))
+    }
   })
   
   ixnRes <- reactiveVal(NULL)
   
   observeEvent(input$runIxnBtn, {
     req(analysisResults())
-    dds <- analysisResults()$dds
+    dds  <- analysisResults()$dds
+    mode <- input$ixnMode
     
-    num1 <- input$ixnNum1; den1 <- input$ixnDen1
-    num2 <- input$ixnNum2; den2 <- input$ixnDen2
-    
-    # --- Validation ---
-    if (num1 == den1 || num2 == den2) {
-      showNotification("Numerator and denominator must differ within each effect.",
-                       type = "error")
-      return()
-    }
-    if (setequal(c(num1, den1), c(num2, den2))) {
-      showNotification("The two effects are identical \u2014 there is nothing to compare.",
-                       type = "error")
-      return()
-    }
-    
-    withProgress(message = "Computing interaction contrast...", value = 0, {
+    withProgress(message = "Computing contrast...", value = 0, {
       
-      # Get model matrix and Group factor from the fitted dds
+      # Get model matrix and Group factor
       mod_mat    <- model.matrix(design(dds), colData(dds))
       group_var  <- colData(dds)$Group
       grp_levels <- levels(group_var)
       
-      needed  <- c(num1, den1, num2, den2)
-      missing <- setdiff(needed, grp_levels)
-      if (length(missing) > 0) {
-        showNotification(paste("Missing group level(s):", paste(missing, collapse = ", ")),
-                         type = "error")
-        return()
-      }
-      
-      # Mean model-matrix row per group level = the coefficient vector
-      # that reconstructs that group's fitted mean
-      group_mean_rows <- sapply(unique(needed), function(g) {
+      # Compute mean model-matrix row for all group levels
+      all_group_mean_rows <- sapply(grp_levels, function(g) {
         idx <- which(group_var == g)
         colMeans(mod_mat[idx, , drop = FALSE])
       })
       
-      # Interaction contrast: (num1 - den1) - (num2 - den2)
-      contrast_vec <- group_mean_rows[, num1] - group_mean_rows[, den1] -
-        group_mean_rows[, num2] + group_mean_rows[, den2]
+      # ---- Build contrast vector depending on mode ----
+      is_pairwise <- (mode == "pairwise")
+      
+      if (is_pairwise) {
+        num1 <- input$ixnNum1; den1 <- input$ixnDen1
+        num2 <- input$ixnNum2; den2 <- input$ixnDen2
+        
+        if (num1 == den1 || num2 == den2) {
+          showNotification("Numerator and denominator must differ within each effect.",
+                           type = "error"); return()
+        }
+        if (setequal(c(num1, den1), c(num2, den2))) {
+          showNotification("The two effects are identical \u2014 nothing to compare.",
+                           type = "error"); return()
+        }
+        
+        needed  <- c(num1, den1, num2, den2)
+        missing <- setdiff(needed, grp_levels)
+        if (length(missing) > 0) {
+          showNotification(paste("Missing group level(s):", paste(missing, collapse = ", ")),
+                           type = "error"); return()
+        }
+        
+        contrast_vec <- all_group_mean_rows[, num1] - all_group_mean_rows[, den1] -
+          all_group_mean_rows[, num2] + all_group_mean_rows[, den2]
+        
+      } else {
+        # Custom mode
+        w <- get_custom_weights()
+        if (abs(sum(w)) > 1e-6) {
+          showNotification(
+            paste0("Weights must sum to 0 (currently ", round(sum(w), 4), ")."),
+            type = "error"); return()
+        }
+        if (all(w == 0)) {
+          showNotification("All weights are zero.", type = "error"); return()
+        }
+        
+        missing <- setdiff(names(w)[w != 0], grp_levels)
+        if (length(missing) > 0) {
+          showNotification(paste("Missing group level(s):", paste(missing, collapse = ", ")),
+                           type = "error"); return()
+        }
+        
+        # Build contrast: weighted sum of group mean-row vectors
+        contrast_vec <- rep(0, ncol(mod_mat))
+        names(contrast_vec) <- colnames(mod_mat)
+        for (g in names(w)) {
+          if (w[g] != 0) {
+            contrast_vec <- contrast_vec + w[g] * all_group_mean_rows[, g]
+          }
+        }
+      }
       
       incProgress(0.3)
       
+      # ---- Run DESeq2 results ----
       res <- tryCatch({
         results(dds,
                 contrast        = contrast_vec,
@@ -4504,30 +4706,47 @@ server <- function(input, output, session) {
       res_df$GeneID <- rownames(res_df)
       res_df <- res_df[!is.na(res_df$padj), ]
       
-      # --- Compute individual effect LFCs for context ---
-      # Effect 1: num1 vs den1
-      contrast_eff1 <- group_mean_rows[, num1] - group_mean_rows[, den1]
-      res_eff1 <- results(dds, contrast = contrast_eff1)
-      # Effect 2: num2 vs den2
-      contrast_eff2 <- group_mean_rows[, num2] - group_mean_rows[, den2]
-      res_eff2 <- results(dds, contrast = contrast_eff2)
+      # ---- Individual effect LFCs (pairwise mode only) ----
+      if (is_pairwise) {
+        contrast_eff1 <- all_group_mean_rows[, num1] - all_group_mean_rows[, den1]
+        res_eff1 <- results(dds, contrast = contrast_eff1)
+        contrast_eff2 <- all_group_mean_rows[, num2] - all_group_mean_rows[, den2]
+        res_eff2 <- results(dds, contrast = contrast_eff2)
+        
+        eff1_label <- paste0("LFC_", num1, "_vs_", den1)
+        eff2_label <- paste0("LFC_", num2, "_vs_", den2)
+        
+        res_df[[eff1_label]] <- res_eff1[rownames(res_df), "log2FoldChange"]
+        res_df[[eff2_label]] <- res_eff2[rownames(res_df), "log2FoldChange"]
+        
+        lfc1 <- res_df[[eff1_label]]
+        lfc2 <- res_df[[eff2_label]]
+        res_df$Pattern <- dplyr::case_when(
+          lfc1 > 0 & lfc2 > 0  ~ "Both UP (magnitude differs)",
+          lfc1 < 0 & lfc2 < 0  ~ "Both DOWN (magnitude differs)",
+          lfc1 > 0 & lfc2 < 0  ~ "Effect 1 UP / Effect 2 DOWN",
+          lfc1 < 0 & lfc2 > 0  ~ "Effect 1 DOWN / Effect 2 UP",
+          TRUE                  ~ "Near zero"
+        )
+      }
       
-      eff1_label <- paste0("LFC_", num1, "_vs_", den1)
-      eff2_label <- paste0("LFC_", num2, "_vs_", den2)
-      
-      res_df[[eff1_label]] <- res_eff1[rownames(res_df), "log2FoldChange"]
-      res_df[[eff2_label]] <- res_eff2[rownames(res_df), "log2FoldChange"]
-      
-      # Classify the interaction pattern
-      lfc1 <- res_df[[eff1_label]]
-      lfc2 <- res_df[[eff2_label]]
-      res_df$Pattern <- dplyr::case_when(
-        lfc1 > 0 & lfc2 > 0  ~ "Both UP (magnitude differs)",
-        lfc1 < 0 & lfc2 < 0  ~ "Both DOWN (magnitude differs)",
-        lfc1 > 0 & lfc2 < 0  ~ "Effect 1 UP / Effect 2 DOWN",
-        lfc1 < 0 & lfc2 > 0  ~ "Effect 1 DOWN / Effect 2 UP",
-        TRUE                  ~ "Near zero"
-      )
+      # ---- Individual group-vs-reference LFCs (custom mode) ----
+      if (!is_pairwise) {
+        w <- get_custom_weights()
+        active_groups <- names(w)[w != 0]
+        # Use user-selected reference group
+        ref_group <- if (!is.null(input$ixnRefGroup) && input$ixnRefGroup %in% grp_levels) {
+          input$ixnRefGroup
+        } else {
+          grp_levels[1]
+        }
+        for (g in setdiff(active_groups, ref_group)) {
+          eff_vec <- all_group_mean_rows[, g] - all_group_mean_rows[, ref_group]
+          res_eff <- results(dds, contrast = eff_vec)
+          col_name <- paste0("LFC_", g, "_vs_", ref_group)
+          res_df[[col_name]] <- res_eff[rownames(res_df), "log2FoldChange"]
+        }
+      }
       
       res_df$significant <- res_df$padj < input$ixnPadj &
         abs(res_df$log2FoldChange) >= input$ixnLFC
@@ -4541,7 +4760,7 @@ server <- function(input, output, session) {
     })
     
     showNotification(
-      paste0("Interaction contrast complete. ",
+      paste0("Contrast complete. ",
              sum(ixnRes()$significant, na.rm = TRUE), " significant genes."),
       type = "message")
   })
@@ -4552,30 +4771,56 @@ server <- function(input, output, session) {
     df <- ixnRes()
     
     df$neg_log10_padj <- -log10(df$padj)
-    # Cap infinite values for plotting
     finite_max <- max(df$neg_log10_padj[is.finite(df$neg_log10_padj)], na.rm = TRUE)
     df$neg_log10_padj[!is.finite(df$neg_log10_padj)] <- finite_max + 1
     
-    # Colour by pattern for significant, grey for NS
-    df$PlotColour <- ifelse(df$significant, df$Pattern, "NS")
+    has_pattern <- "Pattern" %in% names(df)
     
-    pattern_colours <- c(
-      "Both UP"    = "#E69F00",
-      "Both DOWN"  = "#56B4E9",
-      "Effect 1 UP / Effect 2 DOWN"    = "darkred",
-      "Effect 1 DOWN / Effect 2 UP"    = "#009E73",
-      "Near zero"                      = "#CC79A7",
-      "NS"                             = "grey75"
-    )
-    # Only keep levels present in the data
-    present_levels <- intersect(names(pattern_colours), unique(df$PlotColour))
-    df$PlotColour <- factor(df$PlotColour, levels = present_levels)
+    if (has_pattern) {
+      # Pairwise mode: colour by interaction pattern
+      df$PlotColour <- ifelse(df$significant, df$Pattern, "NS")
+      pattern_colours <- c(
+        "Both UP (magnitude differs)"    = "#E69F00",
+        "Both DOWN (magnitude differs)"  = "#56B4E9",
+        "Effect 1 UP / Effect 2 DOWN"    = "#D55E00",
+        "Effect 1 DOWN / Effect 2 UP"    = "#009E73",
+        "Near zero"                      = "#CC79A7",
+        "NS"                             = "grey75"
+      )
+      present_levels <- intersect(names(pattern_colours), unique(df$PlotColour))
+      df$PlotColour <- factor(df$PlotColour, levels = present_levels)
+      colour_scale <- scale_colour_manual(values = pattern_colours[present_levels], name = "Pattern")
+    } else {
+      # Custom mode: simple sig/NS colouring
+      df$PlotColour <- ifelse(df$significant, "Significant", "NS")
+      df$PlotColour <- factor(df$PlotColour, levels = c("Significant", "NS"))
+      colour_scale <- scale_colour_manual(
+        values = c("Significant" = "firebrick", "NS" = "grey75"), name = "")
+    }
     
     top_genes <- head(df[df$significant == TRUE, ], input$ixnVolcTop)
     
+    # Build title depending on mode
+    mode <- input$ixnMode
+    if (!is.null(mode) && mode == "pairwise") {
+      plot_title <- paste0("Interaction: (", input$ixnNum1, " \u2212 ", input$ixnDen1,
+                           ") \u2212 (", input$ixnNum2, " \u2212 ", input$ixnDen2, ")")
+    } else {
+      w <- get_custom_weights()
+      non_zero <- w[w != 0]
+      parts <- sapply(names(non_zero), function(g) {
+        v <- non_zero[g]
+        if (v == 1) g
+        else if (v == -1) paste0("\u2212", g)
+        else if (v > 0) paste0(round(v, 3), "\u00D7", g)
+        else paste0("\u2212", round(abs(v), 3), "\u00D7", g)
+      })
+      plot_title <- paste0("Custom contrast: ", paste(parts, collapse = " + "))
+    }
+    
     ggplot(df, aes(x = log2FoldChange, y = neg_log10_padj)) +
       geom_point(aes(colour = PlotColour), size = 1.5, alpha = 0.6) +
-      scale_colour_manual(values = pattern_colours[present_levels], name = "Pattern") +
+      colour_scale +
       geom_hline(yintercept = -log10(input$ixnPadj),
                  linetype = "dashed", colour = "steelblue") +
       {if (input$ixnLFC > 0) geom_vline(
@@ -4587,10 +4832,9 @@ server <- function(input, output, session) {
         aes(label = GeneID), size = 3, max.overlaps = 20
       ) +
       labs(
-        x     = expression(log[2]~fold~change~(interaction)),
+        x     = expression(log[2]~fold~change~(contrast)),
         y     = expression(-log[10]~adjusted~italic(p)),
-        title = paste0("Interaction: (", input$ixnNum1, " \u2212 ", input$ixnDen1,
-                       ") \u2212 (", input$ixnNum2, " \u2212 ", input$ixnDen2, ")")
+        title = plot_title
       ) +
       theme_minimal(base_size = 13) +
       theme(legend.position = "top")
@@ -4618,9 +4862,14 @@ server <- function(input, output, session) {
   # --- Download interaction results ---
   output$dl_ixn <- downloadHandler(
     filename = function() {
-      paste0("interaction_", input$ixnNum1, "-", input$ixnDen1,
-             "_vs_", input$ixnNum2, "-", input$ixnDen2,
-             "_", Sys.Date(), ".csv")
+      mode <- input$ixnMode
+      if (!is.null(mode) && mode == "pairwise") {
+        paste0("interaction_", input$ixnNum1, "-", input$ixnDen1,
+               "_vs_", input$ixnNum2, "-", input$ixnDen2,
+               "_", Sys.Date(), ".csv")
+      } else {
+        paste0("custom_contrast_", Sys.Date(), ".csv")
+      }
     },
     content = function(file) {
       req(ixnRes())
