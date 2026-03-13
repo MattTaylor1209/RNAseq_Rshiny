@@ -525,6 +525,9 @@ ui <- fluidPage(
                    column(3,
                           checkboxInput("pvalueselect", "Use adjusted p-value?", value = TRUE)
                    ),
+                   column(3,
+                          checkboxInput("volcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE)
+                   ),
                    plotOutput("standardvolcanoplot",
                               width = "90%", height = "500px")
                    
@@ -562,7 +565,8 @@ ui <- fluidPage(
                             h5("Volcano options"),
                             sliderInput("exploreVolcLabelSize", "Label size", 1, 8, 3, step = 0.5),
                             sliderInput("exploreVolcPtSize", "Point size", 0.5, 6, 2, step = 0.5),
-                            sliderInput("exploreVolcAlpha", "Background point opacity", 0.01, 1, 0.1, step = 0.01)
+                            sliderInput("exploreVolcAlpha", "Background point opacity", 0.01, 1, 0.1, step = 0.01),
+                            checkboxInput("exploreVolcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE)
                      ),
                      column(8,
                             tabsetPanel(id = "exploreSubTabs",
@@ -666,6 +670,7 @@ ui <- fluidPage(
                             uiOutput("vennVolcContextUI"),
                             sliderInput("cmpVolcTop", "Top genes to label", 1, 80, 20, step = 1),
                             sliderInput("cmpVolcPtSz", "Point size", 0.5, 6, 2, step = 0.5),
+                            checkboxInput("cmpVolcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE),
                             actionButton("runCmpVolcBtn", "Draw Volcano", icon = icon("chart-line"))
                      ),
                      column(9,
@@ -2409,10 +2414,24 @@ server <- function(input, output, session) {
     res_df <- as.data.frame(res)
     res_df$GeneSymbol <- rownames(res_df)
     
+    # Optionally swap x-axis to shrunken LFC
+    use_shrunk <- isTRUE(input$exploreVolcUseShrunk)
+    res_shrunk <- analysisResults()$res_shrunk
+    if (use_shrunk && !is.null(res_shrunk)) {
+      shrunk_lfc <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
+      res_df$plot_lfc <- shrunk_lfc[rownames(res_df)]
+    } else {
+      res_df$plot_lfc <- res_df$log2FoldChange
+      if (use_shrunk && is.null(res_shrunk)) {
+        showNotification("Shrunken LFCs not available. Enable 'Apply LFC shrinkage' and re-run. Showing unshrunk LFCs.",
+                         type = "warning", duration = 6)
+      }
+    }
+    
     term_genes <- exploreGenes()$GeneSymbol
     res_df$InTerm <- res_df$GeneSymbol %in% term_genes
     
-    # Significance for colouring the term genes
+    # Significance for colouring the term genes (always uses original LFC)
     lfc_cutoff  <- input$lfcThreshold
     padj_cutoff <- input$padjThreshold
     
@@ -2443,8 +2462,10 @@ server <- function(input, output, session) {
       "In term (Down)"  = "#1f77b4"
     )
     
+    x_lab <- if (use_shrunk && !is.null(res_shrunk)) "Shrunken log2 Fold Change" else "log2 Fold Change"
+    
     # Plot background first, then term genes on top
-    ggplot(res_df, aes(x = log2FoldChange, y = -log10(padj))) +
+    ggplot(res_df, aes(x = plot_lfc, y = -log10(padj))) +
       geom_point(data = res_df[!res_df$InTerm, ],
                  colour = "grey80", size = input$exploreVolcPtSize,
                  alpha = input$exploreVolcAlpha) +
@@ -2463,7 +2484,7 @@ server <- function(input, output, session) {
       geom_hline(yintercept = -log10(padj_cutoff), linetype = "dashed", colour = "grey40") +
       theme_minimal(base_size = 13) +
       labs(title = exploreTermLabel(),
-           x = "log2 Fold Change", y = "-log10(adjusted p-value)")
+           x = x_lab, y = "-log10(adjusted p-value)")
   }, res = 96)
   
   ###---Interactive volcano plot output---###
@@ -2473,6 +2494,16 @@ server <- function(input, output, session) {
     
     res <- analysisResults()$res
     res_df <- as.data.frame(res)
+    
+    # Optionally swap x-axis to shrunken LFC
+    use_shrunk <- isTRUE(input$volcUseShrunk)
+    res_shrunk <- analysisResults()$res_shrunk
+    if (use_shrunk && !is.null(res_shrunk)) {
+      shrunk_lfc <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
+      res_df$plot_lfc <- shrunk_lfc[rownames(res_df)]
+    } else {
+      res_df$plot_lfc <- res_df$log2FoldChange
+    }
     
     res_df$log10padj <- -log10(res_df$padj)
     res_df$log10padj[is.infinite(res_df$log10padj)] <- NA
@@ -2498,13 +2529,17 @@ server <- function(input, output, session) {
     volcano_data <- res_df
     volcano_data$Gene <- rownames(volcano_data)
     
+    x_lab <- if (use_shrunk && !is.null(res_shrunk)) "Shrunken log2 Fold Change" else "log2 Fold Change"
+    
     p <- plotly::plot_ly(
       data = volcano_data,
-      x = ~log2FoldChange,
+      x = ~plot_lfc,
       y = ~log10padj,
       type = "scatter",
       mode = "markers",
-      text = ~paste("Gene: ", Gene, "<br>Log2FC: ", signif(log2FoldChange, 3), "<br>padj: ", signif(padj, 4)),
+      text = ~paste("Gene: ", Gene, "<br>Log2FC: ", signif(log2FoldChange, 3),
+                    if (use_shrunk && !is.null(res_shrunk)) paste0("<br>Shrunk Log2FC: ", signif(plot_lfc, 3)) else "",
+                    "<br>padj: ", signif(padj, 4)),
       color = ~significance,
       colors = volcano_colors,
       key = ~Gene,
@@ -2517,13 +2552,13 @@ server <- function(input, output, session) {
     plotly::layout(
       p,
       title = "Interactive Volcano Plot",
-      xaxis = list(title = "log2 Fold Change"),
+      xaxis = list(title = x_lab),
       yaxis = list(title = "-log10 Adjusted p-value"),
       shapes = list(
         list(type = "line", x0 = -lfc_cutoff, x1 = -lfc_cutoff, y0 = 0, y1 = max(volcano_data$log10padj, na.rm = TRUE), line = list(dash = "dash")),
         list(type = "line", x0 =  lfc_cutoff, x1 =  lfc_cutoff, y0 = 0, y1 = max(volcano_data$log10padj, na.rm = TRUE), line = list(dash = "dash")),
         list(type = "line", y0 = -log10(padj_cutoff), y1 = -log10(padj_cutoff),
-             x0 = min(volcano_data$log2FoldChange), x1 = max(volcano_data$log2FoldChange), line = list(dash = "dash"))
+             x0 = min(volcano_data$plot_lfc, na.rm = TRUE), x1 = max(volcano_data$plot_lfc, na.rm = TRUE), line = list(dash = "dash"))
       )
     )
     
@@ -2565,6 +2600,20 @@ server <- function(input, output, session) {
     res <- analysisResults()$res
     res_df <- as.data.frame(res)
     
+    # Optionally swap x-axis to shrunken LFC
+    use_shrunk <- isTRUE(input$volcUseShrunk)
+    res_shrunk <- analysisResults()$res_shrunk
+    if (use_shrunk && !is.null(res_shrunk)) {
+      shrunk_lfc <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
+      res_df$plot_lfc <- shrunk_lfc[rownames(res_df)]
+    } else {
+      res_df$plot_lfc <- res_df$log2FoldChange
+      if (use_shrunk && is.null(res_shrunk)) {
+        showNotification("Shrunken LFCs not available. Enable 'Apply LFC shrinkage' and re-run. Showing unshrunk LFCs.",
+                         type = "warning", duration = 6)
+      }
+    }
+    
     # Basic sanity checks (DESeq2 results should have these)
     validate(
       need("log2FoldChange" %in% names(res_df), "Missing log2FoldChange in results."),
@@ -2597,7 +2646,7 @@ server <- function(input, output, session) {
     lfc_cutoff <- input$lfcThreshold
     p_cutoff   <- input$padjThreshold  # keep your existing input name as the cutoff value
     
-    # Significance (based on chosen p metric)
+    # Significance (based on chosen p metric — always uses original LFC for the call)
     res_df$significance <- "Not significant"
     sig_ok <- !is.na(res_df[[p_col]]) & (res_df[[p_col]] < p_cutoff)
     
@@ -2626,7 +2675,9 @@ server <- function(input, output, session) {
       "Upregulated"     = "red"
     )
     
-    ggplot(res_df, aes(x = log2FoldChange, y = .data[[y_col]])) +
+    x_lab <- if (use_shrunk && !is.null(res_shrunk)) "Shrunken Log2 Fold Change" else "Log2 Fold Change"
+    
+    ggplot(res_df, aes(x = plot_lfc, y = .data[[y_col]])) +
       {if (any(res_df$capped, na.rm = TRUE))
         list(
           geom_point(aes(color = significance, shape = capped), size = input$volcpointsize),
@@ -2647,7 +2698,7 @@ server <- function(input, output, session) {
       ) +
       labs(
         title = "Volcano Plot",
-        x = "Log2 Fold Change",
+        x = x_lab,
         y = y_lab
       ) +
       geom_hline(
@@ -3446,6 +3497,30 @@ server <- function(input, output, session) {
       res_c <- res_c[!is.na(res_c$padj) & !is.na(res_c$log2FoldChange), ]
       res_c$GeneID <- rownames(res_c)
       
+      # Optionally compute shrunken LFC for x-axis
+      use_shrunk <- isTRUE(input$cmpVolcUseShrunk) && isTRUE(isolate(input$applyLfcShrink))
+      if (use_shrunk) {
+        res_raw <- results(dds, contrast = c("Group", spec$numerator, spec$denominator), alpha = spec$padj)
+        res_shrunk_c <- tryCatch({
+          lfcShrink(dds, contrast = c("Group", spec$numerator, spec$denominator),
+                    type = isolate(input$shrinkMethod), res = res_raw)
+        }, error = function(e) NULL)
+        
+        if (!is.null(res_shrunk_c)) {
+          shrunk_lfc <- setNames(res_shrunk_c$log2FoldChange, rownames(res_shrunk_c))
+          res_c$plot_lfc <- shrunk_lfc[rownames(res_c)]
+        } else {
+          res_c$plot_lfc <- res_c$log2FoldChange
+          use_shrunk <- FALSE
+          showNotification("LFC shrinkage failed for this contrast. Showing unshrunk LFCs.", type = "warning")
+        }
+      } else {
+        res_c$plot_lfc <- res_c$log2FoldChange
+        if (isTRUE(input$cmpVolcUseShrunk) && !isTRUE(isolate(input$applyLfcShrink))) {
+          showNotification("Enable 'Apply LFC shrinkage' in the sidebar to use shrunken LFCs.", type = "warning", duration = 6)
+        }
+      }
+      
       # Compute -log10(padj), handling padj == 0
       # Only genes with literal zero p-values get a substitute value and the "capped" flag
       padj_was_zero <- res_c$padj == 0
@@ -3542,7 +3617,9 @@ server <- function(input, output, session) {
       )
       cat_colors[unique_col_name] <- "#f4a736"
       
-      ggplot(res_c, aes(x = log2FoldChange, y = neg_log10_padj_plot, colour = Category, label = label)) +
+      x_lab <- if (use_shrunk) "Shrunken Log2 Fold Change" else "Log2 Fold Change"
+      
+      ggplot(res_c, aes(x = plot_lfc, y = neg_log10_padj_plot, colour = Category, label = label)) +
         {if (any(res_c$capped, na.rm = TRUE))
           list(
             geom_point(aes(shape = capped), size = input$cmpVolcPtSz, alpha = 0.7),
@@ -3559,7 +3636,7 @@ server <- function(input, output, session) {
         geom_hline(yintercept = -log10(spec$padj), linetype = "dashed", colour = "grey40") +
         theme_minimal(base_size = 13) +
         labs(title = paste("Volcano:", focal),
-             x = "log2 Fold Change", y = "-log10(adjusted p-value)",
+             x = x_lab, y = "-log10(adjusted p-value)",
              colour = "Gene category")
     })
   })
