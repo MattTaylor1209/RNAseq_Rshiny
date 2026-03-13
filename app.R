@@ -666,9 +666,9 @@ ui <- fluidPage(
                      column(12,
                             h4("Interaction Contrast (Difference of Differences)"),
                             p("Formally test whether the effect of one factor depends on another.",
-                              "For example: does the genotype effect differ between food conditions?",
-                              "This computes (Effect 1) \u2212 (Effect 2) as a single statistical test,",
-                              "avoiding the pitfalls of comparing significance across separate contrasts.",
+                              "E.g.,: does the genotype effect differ between food conditions?",
+                              "This computes (Effect 1) \u2212 (Effect 2) as a single statistical test.",
+
                               tags$br(),
                               tags$em("Genes that are significant here have a genuinely different response",
                                       "between the two effects — not merely 'significant in one and not the other'.")))
@@ -711,7 +711,7 @@ ui <- fluidPage(
                    
                    # --- Gene tables from Venn regions ---
                    fluidRow(
-                     column(12, h4("Explore Gene Sets from Diagram"))
+                     column(12, h4("Explore Gene Sets from Venn Diagram"))
                    ),
                    fluidRow(
                      column(4,
