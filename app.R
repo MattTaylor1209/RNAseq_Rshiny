@@ -4560,9 +4560,9 @@ server <- function(input, output, session) {
     df$PlotColour <- ifelse(df$significant, df$Pattern, "NS")
     
     pattern_colours <- c(
-      "Both UP (magnitude differs)"    = "#E69F00",
-      "Both DOWN (magnitude differs)"  = "#56B4E9",
-      "Effect 1 UP / Effect 2 DOWN"    = "#D55E00",
+      "Both UP"    = "#E69F00",
+      "Both DOWN"  = "#56B4E9",
+      "Effect 1 UP / Effect 2 DOWN"    = "darkred",
       "Effect 1 DOWN / Effect 2 UP"    = "#009E73",
       "Near zero"                      = "#CC79A7",
       "NS"                             = "grey75"
