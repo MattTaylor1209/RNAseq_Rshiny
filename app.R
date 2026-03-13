@@ -25,8 +25,6 @@ required_packages <- c("limma",
                        
                        "gplots",
                        
-                       "RColorBrewer",
-                       
                        "NMF",
                        
                        "BiasedUrn",
@@ -78,8 +76,6 @@ required_packages <- c("limma",
                        "RUVSeq",
                        
                        "vsn",
-                       
-                       "biomaRt",
                        
                        "DBI",
                        
@@ -1760,6 +1756,9 @@ server <- function(input, output, session) {
     pca_df <- analysisResults()$pca_df
     percentVar <- analysisResults()$percentVar
     
+    n_grps <- length(unique(pca_df$Group))
+    shape_vals <- rep(21:25, length.out = n_grps)
+    
     ggplot(pca_df, aes(x = PC1, y = PC2, fill = Group, shape = Group)) +
       geom_point(size = input$pointsize) +
       geom_text_repel(aes(label = SampleName), size = input$labelsize,
@@ -1767,7 +1766,7 @@ server <- function(input, output, session) {
                       point.padding = 1,    # Increases distance from points
                       min.segment.length = 0,
                       segment.size = if (input$labelsize == 0) 0 else 0.5) +
-      scale_shape_manual(values = c(21:25, 21:25)) + # Change this depending on how many shapes you want, 21-25 are decent
+      scale_shape_manual(values = shape_vals) +
       guides(fill = guide_legend(override.aes = list(shape = 22))) +
       theme_minimal() +
       theme(
@@ -1896,23 +1895,30 @@ server <- function(input, output, session) {
                   "Need at least 2 genes and 2 samples to draw the heatmap."))
     
     # Generate heatmap
-    pheatmap::pheatmap(
-      heatmap_mat,
-      scale = input$heatmapScale,
-      clustering_distance_rows = "correlation",
-      clustering_distance_cols = "correlation",
-      cluster_rows = input$heatmapClusterRows,
-      cluster_cols = input$heatmapClusterCols,
-      show_rownames = input$heatmapShowRowNames,
-      show_colnames = input$heatmapShowColNames,
-      annotation_col = sample_annotation,
-      annotation_colors = annotation_colors,
-      color = colors,
-      main = heatmap_title,
-      fontsize = 10,
-      fontsize_row = if (input$heatmapShowRowNames && length(top_genes) > 50) 6 else 8,
-      fontsize_col = if (input$heatmapShowColNames) 8 else 8
-    )
+    tryCatch({
+      pheatmap::pheatmap(
+        heatmap_mat,
+        scale = input$heatmapScale,
+        clustering_distance_rows = "correlation",
+        clustering_distance_cols = "correlation",
+        cluster_rows = input$heatmapClusterRows,
+        cluster_cols = input$heatmapClusterCols,
+        show_rownames = input$heatmapShowRowNames,
+        show_colnames = input$heatmapShowColNames,
+        annotation_col = sample_annotation,
+        annotation_colors = annotation_colors,
+        color = colors,
+        main = heatmap_title,
+        fontsize = 10,
+        fontsize_row = if (input$heatmapShowRowNames && length(top_genes) > 50) 6 else 8,
+        fontsize_col = if (input$heatmapShowColNames) 8 else 8
+      )
+    }, error = function(e) {
+      plot.new()
+      text(0.5, 0.5, paste("Heatmap error:\n", e$message),
+           col = "red", cex = 1.2)
+    })
+    
   }, res = 96)
   
   
@@ -2088,7 +2094,7 @@ server <- function(input, output, session) {
   ###---GO---###
   
   goSpeciesCode <- reactive({
-    org <- isolate(input$organism)
+    org <- input$organism
     if (org == "org.Hs.eg.db") return("Hs")
     if (org == "org.Mm.eg.db") return("Mm")
     if (org == "org.Rn.eg.db") return("Rn")
@@ -2183,7 +2189,7 @@ server <- function(input, output, session) {
     filename = function() paste0("GO_", input$GOontology, "_results.csv"),
     content  = function(f) {
       go_results <- goResults()$go_results
-      topgo <- limma::topGO(go_results, ontology = input$GOontology, number = input$GOnumber)
+      topgo <- limma::topGO(go_results, ontology = input$GOontology, number = Inf)
       topgo$GOID <- rownames(topgo)
       readr::write_csv(topgo, f)
     }
@@ -2401,19 +2407,27 @@ server <- function(input, output, session) {
       colors <- colorRampPalette(rev(RColorBrewer::brewer.pal(11, input$exploreHeatColor)))(100)
     }
     
-    pheatmap::pheatmap(
-      hm_mat,
-      scale = input$exploreHeatScale,
-      clustering_distance_rows = "correlation",
-      clustering_distance_cols = "correlation",
-      show_rownames = (length(genes_in_mat) <= 80),
-      annotation_col = sample_annotation,
-      annotation_colors = list(Group = group_colors),
-      color = colors,
-      main = exploreTermLabel(),
-      fontsize = 10,
-      fontsize_row = if (length(genes_in_mat) > 50) 6 else 8
-    )
+    # Draw heatmap
+    tryCatch({
+      pheatmap::pheatmap(
+        hm_mat,
+        scale = input$exploreHeatScale,
+        clustering_distance_rows = "correlation",
+        clustering_distance_cols = "correlation",
+        show_rownames = (length(genes_in_mat) <= 80),
+        annotation_col = sample_annotation,
+        annotation_colors = list(Group = group_colors),
+        color = colors,
+        main = exploreTermLabel(),
+        fontsize = 10,
+        fontsize_row = if (length(genes_in_mat) > 50) 6 else 8
+      )
+    }, error = function(e) {
+      plot.new()
+      text(0.5, 0.5, paste("Heatmap error:\n", e$message),
+           col = "red", cex = 1.2)
+    })
+    
   }, res = 96)
   
   # --- Boxplots ---
@@ -2669,7 +2683,7 @@ server <- function(input, output, session) {
     clicked_gene <- click$key
     
     res <- analysisResults()$res
-    vst_mat <- assay(vst(analysisResults()$dds), blind = TRUE)
+    vst_mat <- assay(analysisResults()$vsd)
     sample_meta <- as.data.frame(colData(analysisResults()$dds))
     
     
