@@ -1868,6 +1868,10 @@ server <- function(input, output, session) {
       validate(need(length(input$heatmapGroups) > 0, "Please select at least one group to display."))
     }
     
+    # remove zero-variance rows before correlation clustering
+    row_vars <- apply(heatmap_mat, 1, var, na.rm = TRUE)
+    heatmap_mat <- heatmap_mat[row_vars > 0, , drop = FALSE]
+    
     
     # Set up colors
     if (input$heatmapColorScheme %in% c("viridis", "plasma")) {
