@@ -4503,6 +4503,32 @@ server <- function(input, output, session) {
       res_df <- as.data.frame(res)
       res_df$GeneID <- rownames(res_df)
       res_df <- res_df[!is.na(res_df$padj), ]
+      
+      # --- Compute individual effect LFCs for context ---
+      # Effect 1: num1 vs den1
+      contrast_eff1 <- group_mean_rows[, num1] - group_mean_rows[, den1]
+      res_eff1 <- results(dds, contrast = contrast_eff1)
+      # Effect 2: num2 vs den2
+      contrast_eff2 <- group_mean_rows[, num2] - group_mean_rows[, den2]
+      res_eff2 <- results(dds, contrast = contrast_eff2)
+      
+      eff1_label <- paste0("LFC_", num1, "_vs_", den1)
+      eff2_label <- paste0("LFC_", num2, "_vs_", den2)
+      
+      res_df[[eff1_label]] <- res_eff1[rownames(res_df), "log2FoldChange"]
+      res_df[[eff2_label]] <- res_eff2[rownames(res_df), "log2FoldChange"]
+      
+      # Classify the interaction pattern
+      lfc1 <- res_df[[eff1_label]]
+      lfc2 <- res_df[[eff2_label]]
+      res_df$Pattern <- dplyr::case_when(
+        lfc1 > 0 & lfc2 > 0  ~ "Both UP (magnitude differs)",
+        lfc1 < 0 & lfc2 < 0  ~ "Both DOWN (magnitude differs)",
+        lfc1 > 0 & lfc2 < 0  ~ "Effect 1 UP / Effect 2 DOWN",
+        lfc1 < 0 & lfc2 > 0  ~ "Effect 1 DOWN / Effect 2 UP",
+        TRUE                  ~ "Near zero"
+      )
+      
       res_df$significant <- res_df$padj < input$ixnPadj &
         abs(res_df$log2FoldChange) >= input$ixnLFC
       res_df <- res_df[order(res_df$padj), ]
@@ -4530,15 +4556,26 @@ server <- function(input, output, session) {
     finite_max <- max(df$neg_log10_padj[is.finite(df$neg_log10_padj)], na.rm = TRUE)
     df$neg_log10_padj[!is.finite(df$neg_log10_padj)] <- finite_max + 1
     
+    # Colour by pattern for significant, grey for NS
+    df$PlotColour <- ifelse(df$significant, df$Pattern, "NS")
+    
+    pattern_colours <- c(
+      "Both UP (magnitude differs)"    = "#E69F00",
+      "Both DOWN (magnitude differs)"  = "#56B4E9",
+      "Effect 1 UP / Effect 2 DOWN"    = "#D55E00",
+      "Effect 1 DOWN / Effect 2 UP"    = "#009E73",
+      "Near zero"                      = "#CC79A7",
+      "NS"                             = "grey75"
+    )
+    # Only keep levels present in the data
+    present_levels <- intersect(names(pattern_colours), unique(df$PlotColour))
+    df$PlotColour <- factor(df$PlotColour, levels = present_levels)
+    
     top_genes <- head(df[df$significant == TRUE, ], input$ixnVolcTop)
     
     ggplot(df, aes(x = log2FoldChange, y = neg_log10_padj)) +
-      geom_point(aes(colour = significant), size = 1.5, alpha = 0.6) +
-      scale_colour_manual(
-        values = c("TRUE" = "firebrick", "FALSE" = "grey60"),
-        labels = c("TRUE" = "Significant", "FALSE" = "NS"),
-        name   = ""
-      ) +
+      geom_point(aes(colour = PlotColour), size = 1.5, alpha = 0.6) +
+      scale_colour_manual(values = pattern_colours[present_levels], name = "Pattern") +
       geom_hline(yintercept = -log10(input$ixnPadj),
                  linetype = "dashed", colour = "steelblue") +
       {if (input$ixnLFC > 0) geom_vline(
@@ -4562,16 +4599,20 @@ server <- function(input, output, session) {
   # --- Interaction results table ---
   output$ixnTable <- DT::renderDataTable({
     req(ixnRes())
+    df <- ixnRes()
+    
+    # Find the dynamically-named individual LFC columns
+    lfc_cols <- grep("^LFC_", names(df), value = TRUE)
+    fmt_cols <- c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj", lfc_cols)
+    
     DT::datatable(
-      ixnRes(),
+      df,
       options  = list(pageLength = 15, scrollX = TRUE,
-                      order = list(list(6, "asc"))),
-      rownames = FALSE
+                      order = list(list(which(names(df) == "padj") - 1, "asc"))),
+      rownames = FALSE,
+      filter   = "top"
     ) %>%
-      DT::formatSignif(
-        columns = c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj"),
-        digits  = 4
-      )
+      DT::formatSignif(columns = fmt_cols, digits = 4)
   })
   
   # --- Download interaction results ---
