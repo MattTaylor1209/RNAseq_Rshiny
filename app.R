@@ -259,7 +259,11 @@ ui <- fluidPage(
                  numericInput("lfcThreshold", "log2 Fold Change threshold", value = 0.5, min = 0),
                  numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
                  checkboxInput("filterlow", "Automatically filter low-expression genes?", value = TRUE),
-                 checkboxInput("deseqfilter", "Use DESeq2 independent filtering?", value = TRUE),
+                 radioButtons("deseqfilter", "P-value adjustment filtering:",
+                              choices = c("DESeq2 independent filtering" = "default",
+                                          "IHW (Independent Hypothesis Weighting)" = "ihw",
+                                          "None (standard BH only)" = "none"),
+                              selected = "default"),
                  checkboxInput("applyLfcShrink", "Apply LFC shrinkage?", value = FALSE),
                  conditionalPanel(
                    condition = "input.applyLfcShrink",
@@ -1595,14 +1599,29 @@ server <- function(input, output, session) {
       appendLog("Getting results...")
       showNotification("Getting results...", type="message")
       
-      res <- results(
+      # Build filtering arguments
+      filter_choice <- isolate(input$deseqfilter)
+      filter_args <- list(
         dds,
         lfcThreshold = isolate(input$lfcThreshold),
         altHypothesis = "greaterAbs",
         alpha = isolate(input$padjThreshold),
-        independentFiltering = isolate(input$deseqfilter),
         contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator))
       )
+      
+      if (filter_choice == "ihw") {
+        filter_args$independentFiltering <- TRUE
+        filter_args$filterFun <- ihw
+        appendLog("Using IHW for p-value adjustment.")
+      } else if (filter_choice == "default") {
+        filter_args$independentFiltering <- TRUE
+        appendLog("Using DESeq2 independent filtering.")
+      } else {
+        filter_args$independentFiltering <- FALSE
+        appendLog("No independent filtering applied.")
+      }
+      
+      res <- do.call(results, filter_args)
       
       message("filterThreshold = ", metadata(res)$filterThreshold)
       
@@ -3169,20 +3188,35 @@ server <- function(input, output, session) {
   
   # ---- Helper: run a DESeq2 contrast and return sig gene symbols ----
   run_contrast_degs <- function(dds, numerator, denominator, lfc_thr, padj_thr, 
-                                direction = "both", apply_shrink = FALSE, shrink_method = "ashr") {
+                                direction = "both", apply_shrink = FALSE, shrink_method = "ashr",
+                                filter_mode = "default") {
     contrast_vec <- c("Group", numerator, denominator)
-    res_c <- results(dds,
-                     lfcThreshold = lfc_thr,
-                     altHypothesis = "greaterAbs",
-                     alpha = padj_thr,
-                     contrast = contrast_vec)
+    
+    # Build results() call with appropriate filtering
+    res_args <- list(
+      dds,
+      lfcThreshold    = lfc_thr,
+      altHypothesis   = "greaterAbs",
+      alpha           = padj_thr,
+      contrast        = contrast_vec
+    )
+    if (filter_mode == "ihw") {
+      res_args$independentFiltering <- TRUE
+      res_args$filterFun <- ihw
+    } else if (filter_mode == "default") {
+      res_args$independentFiltering <- TRUE
+    } else {
+      res_args$independentFiltering <- FALSE
+    }
+    
+    res_c <- do.call(results, res_args)
     res_df <- as.data.frame(res_c)
     res_df <- res_df[!is.na(res_df$padj) & !is.na(res_df$log2FoldChange), ]
     
     # Apply LFC shrinkage if requested
     if (isTRUE(apply_shrink)) {
       res_shrunk_c <- tryCatch({
-        lfcShrink(dds, contrast = contrast_vec, type = shrink_method, 
+        lfcShrink(dds, contrast = contrast_vec, type = shrink_method,
                   svalue = (shrink_method == "ashr"), res = res_c)
       }, error = function(e) NULL)
       
@@ -3213,13 +3247,15 @@ server <- function(input, output, session) {
       # Shrinkage settings
       do_shrink    <- isTRUE(isolate(input$applyLfcShrink))
       shrink_meth  <- isolate(input$shrinkMethod)
+      filt_mode    <- isolate(input$deseqfilter)
       
       # Primary contrast
       primary_label <- paste0(input$contrastNumerator, "_vs_", input$contrastDenominator)
       primary_data  <- run_contrast_degs(dds, 
                                          input$contrastNumerator, input$contrastDenominator,
                                          input$cmpLFC, input$cmpPadj, dir,
-                                         apply_shrink = do_shrink, shrink_method = shrink_meth)
+                                         apply_shrink = do_shrink, shrink_method = shrink_meth,
+                                         filter_mode = filt_mode)
       genesets  <- list()
       sig_dfs   <- list()   # store per-contrast significant results with correct stats
       genesets[[primary_label]] <- primary_data$genes
@@ -3231,7 +3267,8 @@ server <- function(input, output, session) {
       for (i in seq_along(extras)) {
         x <- extras[[i]]
         dat <- run_contrast_degs(dds, x$numerator, x$denominator, x$lfc, x$padj, dir,
-                                 apply_shrink = do_shrink, shrink_method = shrink_meth)
+                                 apply_shrink = do_shrink, shrink_method = shrink_meth,
+                                 filter_mode = filt_mode)
         genesets[[x$label]] <- dat$genes
         sig_dfs[[x$label]]  <- dat$sig_df
         incProgress(0.3 / max(length(extras), 1))
@@ -3587,11 +3624,25 @@ server <- function(input, output, session) {
       )
       spec <- Filter(function(x) x$label == focal, all_contrasts)[[1]]
       
-      res_c <- as.data.frame(results(dds,
-                                     lfcThreshold = spec$lfc,
-                                     altHypothesis = "greaterAbs",
-                                     alpha = spec$padj,
-                                     contrast = c("Group", spec$numerator, spec$denominator)))
+      # Inherit global filtering setting
+      filt_mode <- isolate(input$deseqfilter)
+      cmp_volc_res_args <- list(
+        dds,
+        lfcThreshold    = spec$lfc,
+        altHypothesis   = "greaterAbs",
+        alpha           = spec$padj,
+        contrast        = c("Group", spec$numerator, spec$denominator)
+      )
+      if (filt_mode == "ihw") {
+        cmp_volc_res_args$independentFiltering <- TRUE
+        cmp_volc_res_args$filterFun <- ihw
+      } else if (filt_mode == "default") {
+        cmp_volc_res_args$independentFiltering <- TRUE
+      } else {
+        cmp_volc_res_args$independentFiltering <- FALSE
+      }
+      
+      res_c <- as.data.frame(do.call(results, cmp_volc_res_args))
       res_c <- res_c[!is.na(res_c$padj) & !is.na(res_c$log2FoldChange), ]
       res_c$GeneID <- rownames(res_c)
       
@@ -3605,7 +3656,17 @@ server <- function(input, output, session) {
       use_svalue_cmp <- FALSE
       
       if (need_shrink && isTRUE(isolate(input$applyLfcShrink))) {
-        res_raw <- results(dds, contrast = c("Group", spec$numerator, spec$denominator), alpha = spec$padj)
+        # res_raw for lfcShrink — plain results() with filtering inherited
+        raw_args <- list(dds, contrast = c("Group", spec$numerator, spec$denominator), alpha = spec$padj)
+        if (filt_mode == "ihw") {
+          raw_args$independentFiltering <- TRUE
+          raw_args$filterFun <- ihw
+        } else if (filt_mode == "default") {
+          raw_args$independentFiltering <- TRUE
+        } else {
+          raw_args$independentFiltering <- FALSE
+        }
+        res_raw <- do.call(results, raw_args)
         res_shrunk_c <- tryCatch({
           sm <- isolate(input$shrinkMethod)
           lfcShrink(dds, contrast = c("Group", spec$numerator, spec$denominator),
