@@ -260,6 +260,21 @@ ui <- fluidPage(
                  numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
                  checkboxInput("filterlow", "Automatically filter low-expression genes?", value = TRUE),
                  checkboxInput("deseqfilter", "Use DESeq2 independent filtering?", value = TRUE),
+                 checkboxInput("applyLfcShrink", "Apply LFC shrinkage?", value = FALSE),
+                 conditionalPanel(
+                   condition = "input.applyLfcShrink",
+                   selectInput("shrinkMethod", "Shrinkage method:",
+                               choices = c("ashr" = "ashr",
+                                           "normal (legacy)" = "normal"),
+                               selected = "ashr"),
+                   helpText("Shrinkage stabilises LFC estimates for low-count genes.",
+                            "Shrunken LFCs are used for ranking (GSEA) and visualisation.",
+                            "P-values and significance calls are unaffected.",
+                            tags$br(),
+                            tags$b("ashr"), " — recommended; works with any contrast.",
+                            tags$br(),
+                            tags$b("normal"), " — the original DESeq2 method; less precise but preserves padj directly.")
+                 ),
                  uiOutput("groupOrderUI"),
                  uiOutput("contrastSelectUI"),
                  uiOutput("convertToSymbolUI"),
@@ -426,7 +441,9 @@ ui <- fluidPage(
                               condition = "input.gsea_type == 'GO'",
                               selectInput("gseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP")
                             ),
-                            selectInput("gseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
+                            selectInput("gseaMetric", "Rank by", 
+                                        c("stat", "log2FoldChange", "Shrunken log2FC" = "shrunkLFC"), 
+                                        selected = "stat"),
                             numericInput("gseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
                             numericInput("gseaMin", "Min gene set size", value = 10, min = 5, step = 5),
                             numericInput("gseaMax", "Max gene set size", value = 500, min = 50, step = 50),
@@ -451,7 +468,9 @@ ui <- fluidPage(
                             numericInput("gageMin", "Min geneset size", value = 10, min = 2, max = 1000, step = 1),
                             numericInput("gageMax", "Max geneset size", value = 1000, min = 2, max = 5000, step = 10),
                             selectInput("gageMetric", "Use metric",
-                                        choices = c("log2FoldChange","stat"), selected = "stat"),
+                                        choices = c("log2FoldChange", "stat", 
+                                                    "Shrunken log2FC" = "shrunkLFC"), 
+                                        selected = "stat"),
                             checkboxInput("gageSameDir", "Same direction (one-sided)", value = TRUE)
                      ),
                      column(8,
@@ -698,7 +717,9 @@ ui <- fluidPage(
                               condition = "input.cmpGseaType == 'GO'",
                               selectInput("cmpGseaOnt", "Ontology", c("BP","MF","CC"), selected = "BP")
                             ),
-                            selectInput("cmpGseaMetric", "Rank by", c("stat","log2FoldChange"), selected = "stat"),
+                            selectInput("cmpGseaMetric", "Rank by", 
+                                        c("stat", "log2FoldChange", "Shrunken log2FC" = "shrunkLFC"), 
+                                        selected = "stat"),
                             numericInput("cmpGseaP", "p-value cutoff", value = 0.05, min = 0, max = 1, step = 0.01),
                             numericInput("cmpGseaMin", "Min gene set size", value = 10, min = 5, step = 5),
                             numericInput("cmpGseaMax", "Max gene set size", value = 500, min = 50, step = 50),
@@ -709,7 +730,9 @@ ui <- fluidPage(
                             numericInput("cmpGageP", "q-value cutoff", value = 0.1, min = 0, max = 1, step = 0.01),
                             numericInput("cmpGageMin", "Min geneset size", value = 10, min = 2, step = 1),
                             numericInput("cmpGageMax", "Max geneset size", value = 1000, min = 2, step = 10),
-                            selectInput("cmpGageMetric", "Metric", c("log2FoldChange","stat"), selected = "stat"),
+                            selectInput("cmpGageMetric", "Metric", 
+                                        c("log2FoldChange", "stat", "Shrunken log2FC" = "shrunkLFC"), 
+                                        selected = "stat"),
                             checkboxInput("cmpGageSameDir", "Same direction (one-sided)", value = TRUE),
                             actionButton("runCmpGageBtn", "Run GAGE", icon = icon("dna"))
                      ),
@@ -1557,6 +1580,31 @@ server <- function(input, output, session) {
       
       message("filterThreshold = ", metadata(res)$filterThreshold)
       
+      # ---- LFC shrinkage (optional) ----
+      res_shrunk <- NULL
+      if (isTRUE(isolate(input$applyLfcShrink))) {
+        shrink_method <- isolate(input$shrinkMethod)
+        appendLog(paste0("Applying LFC shrinkage (method: ", shrink_method, ")..."))
+        showNotification(paste0("Applying LFC shrinkage (", shrink_method, ")..."), type = "message")
+        
+        res_shrunk <- tryCatch({
+          lfcShrink(
+            dds,
+            contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator)),
+            type     = shrink_method,
+            res      = res
+          )
+        }, error = function(e) {
+          showNotification(paste("LFC shrinkage failed:", e$message), type = "error", duration = 8)
+          appendLog(paste("LFC shrinkage failed:", e$message))
+          NULL
+        })
+        
+        if (!is.null(res_shrunk)) {
+          appendLog("LFC shrinkage applied successfully.")
+        }
+      }
+      
       # Match your UI thresholds in the summary
       sum_txt <- paste(
         capture.output(summary(res, alpha = isolate(input$padjThreshold))),
@@ -1612,6 +1660,17 @@ server <- function(input, output, session) {
       # Step 3: Add the gene_length column back to your 'res_entrez' data frame if needed
       res_entrez <- cbind(res_entrez, gene_lengths)
       
+      # Step 4: Add shrunken LFC column if shrinkage was applied
+      if (!is.null(res_shrunk)) {
+        shrunk_df <- data.frame(
+          GeneIDs   = rownames(res_shrunk),
+          shrunkLFC = res_shrunk$log2FoldChange,
+          stringsAsFactors = FALSE
+        )
+        res_entrez <- dplyr::left_join(res_entrez, shrunk_df, by = "GeneIDs")
+        appendLog("Shrunken LFC column added to results table.")
+      }
+      
       appendLog("PCA analysis...")
       showNotification("PCA analysis...", type="message")
       
@@ -1634,7 +1693,7 @@ server <- function(input, output, session) {
       
     })
     # Output from reactive expression
-    list(dds = dds, res = res, vsd = vsd, pca_df = pca_df, percentVar = percentVar,
+    list(dds = dds, res = res, res_shrunk = res_shrunk, vsd = vsd, pca_df = pca_df, percentVar = percentVar,
          res_entrez = res_entrez)
     
   })
@@ -1673,7 +1732,14 @@ server <- function(input, output, session) {
   # DE results table
   output$deTable <- renderDataTable({
     req(analysisResults())
-    datatable(as.data.frame(analysisResults()$res))
+    res_df <- as.data.frame(analysisResults()$res)
+    # Append shrunken LFC column if available
+    res_shrunk <- analysisResults()$res_shrunk
+    if (!is.null(res_shrunk)) {
+      shrunk_lfc <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
+      res_df$shrunkLFC <- shrunk_lfc[rownames(res_df)]
+    }
+    datatable(res_df)
   })
   
   # Update heatmap group choices when analysis results are available
@@ -1806,10 +1872,17 @@ server <- function(input, output, session) {
       orgdb_name <- isolate(input$organism)
       orgdb <- isolate(get(orgdb_name))
       
-      # 1) Choose the ranking metric (use unshrunk 'stat' if available)
+      # 1) Choose the ranking metric
       metric_col <- switch(input$gseaMetric,
                            stat = "stat",
-                           log2FoldChange = "log2FoldChange")
+                           log2FoldChange = "log2FoldChange",
+                           shrunkLFC = "shrunkLFC")
+      
+      if (metric_col == "shrunkLFC" && !"shrunkLFC" %in% names(ba$res_entrez)) {
+        showNotification("Shrunken LFCs not available. Enable 'Apply LFC shrinkage' in the sidebar and re-run analysis.",
+                         type = "error", duration = 8)
+        return(NULL)
+      }
       
       validate(need(metric_col %in% names(ba$res_entrez),
                     sprintf("Column '%s' not found in DE results.", metric_col)))
@@ -2596,8 +2669,15 @@ server <- function(input, output, session) {
   
   output$dl_res <- downloadHandler(
     filename = function() "deseq2_results.csv",
-    content  = function(f) utils::write.csv(as.data.frame(analysisResults()$res),
-                                            f, row.names = TRUE)
+    content  = function(f) {
+      res_df <- as.data.frame(analysisResults()$res)
+      res_shrunk <- analysisResults()$res_shrunk
+      if (!is.null(res_shrunk)) {
+        shrunk_lfc <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
+        res_df$shrunkLFC <- shrunk_lfc[rownames(res_df)]
+      }
+      utils::write.csv(res_df, f, row.names = TRUE)
+    }
   )
   
   #---GAGE---#
@@ -2639,6 +2719,11 @@ server <- function(input, output, session) {
       req("ENTREZID" %in% names(ba$res_entrez), "ENTREZID not found in DE results.")
       
       metric_col <- if (metric %in% names(ba$res_entrez)) metric else "log2FoldChange"
+      if (metric == "shrunkLFC" && !"shrunkLFC" %in% names(ba$res_entrez)) {
+        showNotification("Shrunken LFCs not available. Enable 'Apply LFC shrinkage' in the sidebar and re-run analysis.",
+                         type = "error", duration = 8)
+        return()
+      }
       v   <- ba$res_entrez[[metric_col]]
       ids <- as.character(ba$res_entrez[["ENTREZID"]])
       keep <- is.finite(v) & !is.na(ids) & nzchar(ids)
@@ -2935,14 +3020,28 @@ server <- function(input, output, session) {
   })
   
   # ---- Helper: run a DESeq2 contrast and return sig gene symbols ----
-  run_contrast_degs <- function(dds, numerator, denominator, lfc_thr, padj_thr, direction = "both") {
+  run_contrast_degs <- function(dds, numerator, denominator, lfc_thr, padj_thr, 
+                                direction = "both", apply_shrink = FALSE, shrink_method = "ashr") {
+    contrast_vec <- c("Group", numerator, denominator)
     res_c <- results(dds,
                      lfcThreshold = lfc_thr,
                      altHypothesis = "greaterAbs",
                      alpha = padj_thr,
-                     contrast = c("Group", numerator, denominator))
+                     contrast = contrast_vec)
     res_df <- as.data.frame(res_c)
     res_df <- res_df[!is.na(res_df$padj) & !is.na(res_df$log2FoldChange), ]
+    
+    # Apply LFC shrinkage if requested
+    if (isTRUE(apply_shrink)) {
+      res_shrunk_c <- tryCatch({
+        lfcShrink(dds, contrast = contrast_vec, type = shrink_method, res = res_c)
+      }, error = function(e) NULL)
+      
+      if (!is.null(res_shrunk_c)) {
+        shrunk_lfc <- setNames(res_shrunk_c$log2FoldChange, rownames(res_shrunk_c))
+        res_df$shrunkLFC <- shrunk_lfc[rownames(res_df)]
+      }
+    }
     
     if (direction == "both") {
       sig <- res_df[res_df$padj < padj_thr & abs(res_df$log2FoldChange) >= lfc_thr, ]
@@ -2962,11 +3061,16 @@ server <- function(input, output, session) {
     
     withProgress(message = "Computing contrasts for Venn...", value = 0, {
       
+      # Shrinkage settings
+      do_shrink    <- isTRUE(isolate(input$applyLfcShrink))
+      shrink_meth  <- isolate(input$shrinkMethod)
+      
       # Primary contrast
       primary_label <- paste0(input$contrastNumerator, "_vs_", input$contrastDenominator)
       primary_data  <- run_contrast_degs(dds, 
                                          input$contrastNumerator, input$contrastDenominator,
-                                         input$cmpLFC, input$cmpPadj, dir)
+                                         input$cmpLFC, input$cmpPadj, dir,
+                                         apply_shrink = do_shrink, shrink_method = shrink_meth)
       genesets  <- list()
       sig_dfs   <- list()   # store per-contrast significant results with correct stats
       genesets[[primary_label]] <- primary_data$genes
@@ -2977,7 +3081,8 @@ server <- function(input, output, session) {
       
       for (i in seq_along(extras)) {
         x <- extras[[i]]
-        dat <- run_contrast_degs(dds, x$numerator, x$denominator, x$lfc, x$padj, dir)
+        dat <- run_contrast_degs(dds, x$numerator, x$denominator, x$lfc, x$padj, dir,
+                                 apply_shrink = do_shrink, shrink_method = shrink_meth)
         genesets[[x$label]] <- dat$genes
         sig_dfs[[x$label]]  <- dat$sig_df
         incProgress(0.3 / max(length(extras), 1))
@@ -3535,7 +3640,8 @@ server <- function(input, output, session) {
     if (startsWith(choice, "UNIQUE__")) {
       focal    <- sub("^UNIQUE__", "", choice)
       src_df   <- sig_dfs[[focal]]
-      stats_df <- src_df[rownames(src_df) %in% symbols, c("log2FoldChange", "stat", "padj"), drop = FALSE]
+      cols_to_keep <- intersect(c("log2FoldChange", "stat", "padj", "shrunkLFC"), names(src_df))
+      stats_df <- src_df[rownames(src_df) %in% symbols, cols_to_keep, drop = FALSE]
       stats_df$GeneIDs <- rownames(stats_df)
     } else {
       src_names <- if (choice == "ALL_SHARED") names(gs) else strsplit(sub("^PAIR__", "", choice), "\\|\\|\\|")[[1]]
@@ -3559,6 +3665,25 @@ server <- function(input, output, session) {
         padj           = wide_tbl$mean_padj,
         stringsAsFactors = FALSE
       )
+      
+      # Compute mean shrunkLFC across contrasts if available
+      has_shrunk <- any(vapply(sig_dfs[src_names], function(df) "shrunkLFC" %in% names(df), logical(1)))
+      if (has_shrunk) {
+        shrunk_vals <- lapply(src_names, function(nm) {
+          df <- sig_dfs[[nm]]
+          if ("shrunkLFC" %in% names(df)) {
+            setNames(df[rownames(df) %in% symbols, "shrunkLFC"], 
+                     rownames(df)[rownames(df) %in% symbols])
+          } else NULL
+        })
+        shrunk_vals <- Filter(Negate(is.null), shrunk_vals)
+        if (length(shrunk_vals) > 0) {
+          all_shrunk <- do.call(c, shrunk_vals)
+          mean_shrunk <- tapply(all_shrunk, names(all_shrunk), mean, na.rm = TRUE)
+          stats_df$shrunkLFC <- as.numeric(mean_shrunk[stats_df$GeneIDs])
+        }
+      }
+      
       rownames(stats_df) <- stats_df$GeneIDs
       # Restrict symbols to filtered set
       symbols <- wide_tbl$GeneID
@@ -3637,6 +3762,11 @@ server <- function(input, output, session) {
                     "Not enough genes in this set for GSEA."))
       
       metric_col <- input$cmpGseaMetric
+      if (metric_col == "shrunkLFC" && !"shrunkLFC" %in% names(sub_res)) {
+        showNotification("Shrunken LFCs not available for this gene set. Enable 'Apply LFC shrinkage' and re-run.",
+                         type = "error", duration = 8)
+        return()
+      }
       m <- sub_res[[metric_col]]
       names(m) <- sub_res$ENTREZID
       m <- m[is.finite(m)]
@@ -3774,6 +3904,11 @@ server <- function(input, output, session) {
       
       sub_res    <- info$res_entrez_subset
       metric_col <- input$cmpGageMetric
+      if (metric_col == "shrunkLFC" && !"shrunkLFC" %in% names(sub_res)) {
+        showNotification("Shrunken LFCs not available for this gene set. Enable 'Apply LFC shrinkage' and re-run.",
+                         type = "error", duration = 8)
+        return()
+      }
       fc_vec     <- sub_res[[metric_col]]
       names(fc_vec) <- sub_res$ENTREZID
       fc_vec <- fc_vec[is.finite(fc_vec)]
