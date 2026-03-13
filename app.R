@@ -661,6 +661,54 @@ ui <- fluidPage(
                    ),
                    hr(),
                    
+                   # --- Interaction Contrast (Difference of Differences) ---
+                   fluidRow(
+                     column(12,
+                            h4("Interaction Contrast (Difference of Differences)"),
+                            p("Formally test whether the effect of one factor depends on another.",
+                              "For example: does the genotype effect differ between food conditions?",
+                              "This computes (Effect 1) \u2212 (Effect 2) as a single statistical test,",
+                              "avoiding the pitfalls of comparing significance across separate contrasts.",
+                              tags$br(),
+                              tags$em("Genes that are significant here have a genuinely different response",
+                                      "between the two effects — not merely 'significant in one and not the other'.")))
+                   ),
+                   fluidRow(
+                     column(3,
+                            wellPanel(
+                              h5("Effect 1"),
+                              helpText("e.g. the effect of food in genotype A"),
+                              uiOutput("ixnNum1UI"),
+                              uiOutput("ixnDen1UI")
+                            ),
+                            wellPanel(
+                              h5("Effect 2 (subtracted from Effect 1)"),
+                              helpText("e.g. the effect of food in genotype B"),
+                              uiOutput("ixnNum2UI"),
+                              uiOutput("ixnDen2UI")
+                            ),
+                            numericInput("ixnPadj", "Adj. p-value threshold", value = 0.05,
+                                         min = 0, max = 1, step = 0.01),
+                            numericInput("ixnLFC", "LFC threshold (on interaction effect)",
+                                         value = 0, min = 0, step = 0.1),
+                            sliderInput("ixnVolcTop", "Top genes to label", 1, 80, 20, step = 1),
+                            actionButton("runIxnBtn", "Run Interaction Test",
+                                         icon = icon("not-equal")),
+                            br(), br(),
+                            downloadButton("dl_ixn", "Download results CSV")
+                     ),
+                     column(9,
+                            wellPanel(
+                              style = "background-color: #f8f9fa;",
+                              textOutput("ixnFormula")
+                            ),
+                            plotOutput("ixnVolcano", height = "420px"),
+                            br(),
+                            DT::dataTableOutput("ixnTable")
+                     )
+                   ),
+                   hr(),
+                   
                    # --- Gene tables from Venn regions ---
                    fluidRow(
                      column(12, h4("Explore Gene Sets from Diagram"))
@@ -3846,16 +3894,33 @@ server <- function(input, output, session) {
   
   # ---- Downstream selector UI ----
   output$dsSetSelectorUI <- renderUI({
-    req(vennSets())
-    gs  <- vennSets()$genesets
-    nms <- names(gs)
+    # Allow rendering if EITHER venn sets or interaction results exist
+    req((!is.null(vennSets())) || (!is.null(ixnRes())))
+    
+    has_venn <- !is.null(vennSets())
+    has_ixn  <- !is.null(ixnRes())
+    
+    nms <- if (has_venn) names(vennSets()$genesets) else character(0)
+    
+    # Build mode choices dynamically
+    mode_choices <- character(0)
+    if (has_venn) {
+      mode_choices <- c(mode_choices,
+                        "Shared across ALL contrasts"      = "all_shared",
+                        "Shared between selected contrasts" = "selected_shared",
+                        "Unique to one contrast"           = "unique")
+    }
+    if (has_ixn) {
+      mode_choices <- c(mode_choices,
+                        "Interaction contrast (sig. genes)" = "interaction")
+    }
+    
+    default_sel <- if (has_ixn && !has_venn) "interaction" else unname(mode_choices[1])
     
     tagList(
-      radioButtons("dsSetMode", "Gene set type:",
-                   choices = c("Shared across ALL contrasts" = "all_shared",
-                               "Shared between selected contrasts" = "selected_shared",
-                               "Unique to one contrast" = "unique"),
-                   selected = "all_shared"),
+      radioButtons("dsSetMode", "Gene set source:",
+                   choices  = mode_choices,
+                   selected = default_sel),
       conditionalPanel(
         condition = "input.dsSetMode == 'selected_shared'",
         checkboxGroupInput("dsSharedContrasts", "Select contrasts (2 or more):",
@@ -3867,7 +3932,7 @@ server <- function(input, output, session) {
         selectInput("dsUniqueContrast", "Unique to:", choices = nms, selected = nms[1])
       ),
       conditionalPanel(
-        condition = "input.dsSetMode != 'unique'",
+        condition = "input.dsSetMode != 'unique' && input.dsSetMode != 'interaction'",
         selectInput("dsConcordance", "Direction filter for downstream analyses:",
                     choices = c(
                       "All shared (average stats)"        = "all",
@@ -3878,6 +3943,15 @@ server <- function(input, output, session) {
                     selected = "all"),
         helpText("Filters which genes are passed to GO / GSEA / GAGE based on directional concordance across contrasts.")
       ),
+      conditionalPanel(
+        condition = "input.dsSetMode == 'interaction'",
+        selectInput("dsIxnDirection", "Direction filter:",
+                    choices = c("All significant"  = "all",
+                                "Upregulated only"   = "up",
+                                "Downregulated only" = "down"),
+                    selected = "all"),
+        helpText("Uses genes from the interaction contrast results. Stats (LFC, stat, padj) are from the interaction test itself.")
+      ),
       p(em("Tip: load genes above first to preview concordance before running analyses."))
     )
   })
@@ -3887,6 +3961,7 @@ server <- function(input, output, session) {
     mode <- input$dsSetMode
     if (is.null(mode)) return(NULL)
     if (mode == "all_shared") return("ALL_SHARED")
+    if (mode == "interaction") return("INTERACTION")
     if (mode == "unique") {
       req(input$dsUniqueContrast)
       return(paste0("UNIQUE__", input$dsUniqueContrast))
@@ -3899,9 +3974,57 @@ server <- function(input, output, session) {
     NULL
   })
   
-  # Helper: get ENTREZ IDs for a selected Venn region
+  # Helper: get ENTREZ IDs for a selected Venn region or interaction result
   get_entrez_for_set <- function(choice) {
-    req(vennSets(), analysisResults())
+    req(analysisResults())
+    
+    # ---- Interaction contrast pathway ----
+    if (choice == "INTERACTION") {
+      req(ixnRes())
+      ixn_df     <- ixnRes()
+      
+      # Significant genes (for GO ORA)
+      sig_df     <- ixn_df[ixn_df$significant == TRUE, , drop = FALSE]
+      
+      # Apply direction filter to the sig set only (for GO)
+      dir_filter <- if (!is.null(input$dsIxnDirection)) input$dsIxnDirection else "all"
+      if (dir_filter == "up")   sig_df <- sig_df[sig_df$log2FoldChange > 0, , drop = FALSE]
+      if (dir_filter == "down") sig_df <- sig_df[sig_df$log2FoldChange < 0, , drop = FALSE]
+      
+      validate(need(nrow(sig_df) > 0,
+                    "No significant interaction genes (try relaxing thresholds or direction filter)."))
+      
+      symbols    <- sig_df$GeneID
+      res_entrez <- analysisResults()$res_entrez
+      orgdb_name <- isolate(input$organism)
+      orgdb      <- get(orgdb_name)
+      from_type  <- detect_gene_id_type(symbols)$orgdb
+      mapped     <- clusterProfiler::bitr(symbols, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
+      
+      # For GSEA/GAGE: use ALL genes (not just significant) so ranking is complete
+      all_genes  <- ixn_df$GeneID
+      all_mapped <- clusterProfiler::bitr(all_genes, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
+      
+      all_stats_df <- data.frame(
+        GeneIDs        = ixn_df$GeneID,
+        log2FoldChange = ixn_df$log2FoldChange,
+        stat           = ixn_df$stat,
+        padj           = ixn_df$padj,
+        stringsAsFactors = FALSE
+      )
+      rownames(all_stats_df) <- all_stats_df$GeneIDs
+      
+      res_entrez_subset <- merge(all_stats_df, all_mapped, by.x = "GeneIDs", by.y = from_type, all.x = FALSE)
+      res_entrez_subset <- merge(res_entrez_subset,
+                                 res_entrez[, c("GeneIDs", "gene_lengths")],
+                                 by = "GeneIDs", all.x = TRUE)
+      
+      return(list(symbols = symbols, entrez = mapped$ENTREZID, mapped = mapped,
+                  res_entrez_subset = res_entrez_subset))
+    }
+    
+    # ---- Venn-based pathway (original logic) ----
+    req(vennSets())
     vs         <- vennSets()
     gs         <- vs$genesets
     sig_dfs    <- vs$sig_dfs
@@ -3982,7 +4105,8 @@ server <- function(input, output, session) {
   
   # ---- Compare GO ----
   observeEvent(input$runCmpGOBtn, {
-    req(vennSets(), analysisResults())
+    req(analysisResults())
+    req(!is.null(vennSets()) || !is.null(ixnRes()))
     withProgress(message = "Running GO on selected gene set...", value = 0, {
       info <- get_entrez_for_set(dsSetChoice())
       sp   <- isolate(goSpeciesCode())
@@ -4031,7 +4155,8 @@ server <- function(input, output, session) {
   
   # ---- Compare GSEA ----
   observeEvent(input$runCmpGseaBtn, {
-    req(vennSets(), analysisResults())
+    req(analysisResults())
+    req(!is.null(vennSets()) || !is.null(ixnRes()))
     withProgress(message = "Running GSEA on selected gene set...", value = 0, {
       info       <- get_entrez_for_set(dsSetChoice())
       orgdb_name <- isolate(input$organism)
@@ -4164,7 +4289,8 @@ server <- function(input, output, session) {
   
   # ---- Compare GAGE ----
   observeEvent(input$runCmpGageBtn, {
-    req(vennSets(), analysisResults())
+    req(analysisResults())
+    req(!is.null(vennSets()) || !is.null(ixnRes()))
     withProgress(message = "Running GAGE on selected gene set...", value = 0, {
       info       <- get_entrez_for_set(dsSetChoice())
       orgdb_name <- isolate(input$organism)
@@ -4280,6 +4406,184 @@ server <- function(input, output, session) {
       overlay <- pngs[grepl(paste0("^", pid, ".*pathview.*\\.png$"), basename(pngs))]
       png_f   <- if (length(overlay)) overlay[which.max(file.mtime(overlay))] else pngs[which.max(file.mtime(pngs))]
       file.copy(png_f, file, overwrite = TRUE)
+    }
+  )
+  
+  # ---- Interaction Contrast (Difference of Differences) ----
+  
+  # Dynamic UI for the four group selectors
+  output$ixnNum1UI <- renderUI({
+    req(input$groupOrder)
+    selectInput("ixnNum1", "Numerator:", choices = input$groupOrder)
+  })
+  output$ixnDen1UI <- renderUI({
+    req(input$groupOrder)
+    selectInput("ixnDen1", "Denominator:", choices = input$groupOrder)
+  })
+  output$ixnNum2UI <- renderUI({
+    req(input$groupOrder)
+    selectInput("ixnNum2", "Numerator:", choices = input$groupOrder)
+  })
+  output$ixnDen2UI <- renderUI({
+    req(input$groupOrder)
+    selectInput("ixnDen2", "Denominator:", choices = input$groupOrder)
+  })
+  
+  # Show the contrast formula in plain English
+  output$ixnFormula <- renderText({
+    req(input$ixnNum1, input$ixnDen1, input$ixnNum2, input$ixnDen2)
+    paste0("Testing: (", input$ixnNum1, " \u2212 ", input$ixnDen1,
+           ")  \u2212  (", input$ixnNum2, " \u2212 ", input$ixnDen2, ")")
+  })
+  
+  ixnRes <- reactiveVal(NULL)
+  
+  observeEvent(input$runIxnBtn, {
+    req(analysisResults())
+    dds <- analysisResults()$dds
+    
+    num1 <- input$ixnNum1; den1 <- input$ixnDen1
+    num2 <- input$ixnNum2; den2 <- input$ixnDen2
+    
+    # --- Validation ---
+    if (num1 == den1 || num2 == den2) {
+      showNotification("Numerator and denominator must differ within each effect.",
+                       type = "error")
+      return()
+    }
+    if (setequal(c(num1, den1), c(num2, den2))) {
+      showNotification("The two effects are identical \u2014 there is nothing to compare.",
+                       type = "error")
+      return()
+    }
+    
+    withProgress(message = "Computing interaction contrast...", value = 0, {
+      
+      # Get model matrix and Group factor from the fitted dds
+      mod_mat    <- model.matrix(design(dds), colData(dds))
+      group_var  <- colData(dds)$Group
+      grp_levels <- levels(group_var)
+      
+      needed  <- c(num1, den1, num2, den2)
+      missing <- setdiff(needed, grp_levels)
+      if (length(missing) > 0) {
+        showNotification(paste("Missing group level(s):", paste(missing, collapse = ", ")),
+                         type = "error")
+        return()
+      }
+      
+      # Mean model-matrix row per group level = the coefficient vector
+      # that reconstructs that group's fitted mean
+      group_mean_rows <- sapply(unique(needed), function(g) {
+        idx <- which(group_var == g)
+        colMeans(mod_mat[idx, , drop = FALSE])
+      })
+      
+      # Interaction contrast: (num1 - den1) - (num2 - den2)
+      contrast_vec <- group_mean_rows[, num1] - group_mean_rows[, den1] -
+        group_mean_rows[, num2] + group_mean_rows[, den2]
+      
+      incProgress(0.3)
+      
+      res <- tryCatch({
+        results(dds,
+                contrast        = contrast_vec,
+                alpha           = input$ixnPadj,
+                lfcThreshold    = input$ixnLFC,
+                altHypothesis   = "greaterAbs")
+      }, error = function(e) {
+        showNotification(paste("DESeq2 results() failed:", e$message),
+                         type = "error", duration = NULL)
+        NULL
+      })
+      
+      if (is.null(res)) return()
+      incProgress(0.6)
+      
+      res_df <- as.data.frame(res)
+      res_df$GeneID <- rownames(res_df)
+      res_df <- res_df[!is.na(res_df$padj), ]
+      res_df$significant <- res_df$padj < input$ixnPadj &
+        abs(res_df$log2FoldChange) >= input$ixnLFC
+      res_df <- res_df[order(res_df$padj), ]
+      
+      # Move GeneID to first column
+      res_df <- res_df[, c("GeneID", setdiff(names(res_df), "GeneID"))]
+      
+      ixnRes(res_df)
+      incProgress(1)
+    })
+    
+    showNotification(
+      paste0("Interaction contrast complete. ",
+             sum(ixnRes()$significant, na.rm = TRUE), " significant genes."),
+      type = "message")
+  })
+  
+  # --- Interaction volcano plot ---
+  output$ixnVolcano <- renderPlot({
+    req(ixnRes())
+    df <- ixnRes()
+    
+    df$neg_log10_padj <- -log10(df$padj)
+    # Cap infinite values for plotting
+    finite_max <- max(df$neg_log10_padj[is.finite(df$neg_log10_padj)], na.rm = TRUE)
+    df$neg_log10_padj[!is.finite(df$neg_log10_padj)] <- finite_max + 1
+    
+    top_genes <- head(df[df$significant == TRUE, ], input$ixnVolcTop)
+    
+    ggplot(df, aes(x = log2FoldChange, y = neg_log10_padj)) +
+      geom_point(aes(colour = significant), size = 1.5, alpha = 0.6) +
+      scale_colour_manual(
+        values = c("TRUE" = "firebrick", "FALSE" = "grey60"),
+        labels = c("TRUE" = "Significant", "FALSE" = "NS"),
+        name   = ""
+      ) +
+      geom_hline(yintercept = -log10(input$ixnPadj),
+                 linetype = "dashed", colour = "steelblue") +
+      {if (input$ixnLFC > 0) geom_vline(
+        xintercept = c(-input$ixnLFC, input$ixnLFC),
+        linetype = "dashed", colour = "steelblue"
+      )} +
+      ggrepel::geom_text_repel(
+        data = top_genes,
+        aes(label = GeneID), size = 3, max.overlaps = 20
+      ) +
+      labs(
+        x     = expression(log[2]~fold~change~(interaction)),
+        y     = expression(-log[10]~adjusted~italic(p)),
+        title = paste0("Interaction: (", input$ixnNum1, " \u2212 ", input$ixnDen1,
+                       ") \u2212 (", input$ixnNum2, " \u2212 ", input$ixnDen2, ")")
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "top")
+  })
+  
+  # --- Interaction results table ---
+  output$ixnTable <- DT::renderDataTable({
+    req(ixnRes())
+    DT::datatable(
+      ixnRes(),
+      options  = list(pageLength = 15, scrollX = TRUE,
+                      order = list(list(6, "asc"))),
+      rownames = FALSE
+    ) %>%
+      DT::formatSignif(
+        columns = c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj"),
+        digits  = 4
+      )
+  })
+  
+  # --- Download interaction results ---
+  output$dl_ixn <- downloadHandler(
+    filename = function() {
+      paste0("interaction_", input$ixnNum1, "-", input$ixnDen1,
+             "_vs_", input$ixnNum2, "-", input$ixnDen2,
+             "_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      req(ixnRes())
+      readr::write_csv(ixnRes(), file)
     }
   )
   
