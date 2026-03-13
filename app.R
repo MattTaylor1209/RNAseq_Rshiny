@@ -1637,6 +1637,7 @@ server <- function(input, output, session) {
             dds,
             contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator)),
             type     = shrink_method,
+            lfcThreshold = input$lfcThreshold,
             svalue   = (shrink_method == "ashr"),
             res      = res
           )
@@ -3217,7 +3218,7 @@ server <- function(input, output, session) {
     if (isTRUE(apply_shrink)) {
       res_shrunk_c <- tryCatch({
         lfcShrink(dds, contrast = contrast_vec, type = shrink_method,
-                  svalue = (shrink_method == "ashr"), res = res_c)
+                  svalue = (shrink_method == "ashr"), lfcThreshold = lfc_thr, res = res_c)
       }, error = function(e) NULL)
       
       if (!is.null(res_shrunk_c)) {
@@ -3670,7 +3671,7 @@ server <- function(input, output, session) {
         res_shrunk_c <- tryCatch({
           sm <- isolate(input$shrinkMethod)
           lfcShrink(dds, contrast = c("Group", spec$numerator, spec$denominator),
-                    type = sm, svalue = (sm == "ashr"), res = res_raw)
+                    type = sm, svalue = (sm == "ashr"), lfcThreshold    = spec$lfc, res = res_raw)
         }, error = function(e) NULL)
       }
       
