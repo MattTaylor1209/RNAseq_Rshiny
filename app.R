@@ -523,7 +523,11 @@ ui <- fluidPage(
                                       value = 12)
                    ),
                    column(3,
-                          checkboxInput("pvalueselect", "Use adjusted p-value?", value = TRUE)
+                          selectInput("volcYaxis", "Y-axis metric:",
+                                      choices = c("Adjusted p-value" = "padj",
+                                                  "P-value" = "pvalue",
+                                                  "s-value (requires ashr shrinkage)" = "svalue"),
+                                      selected = "padj")
                    ),
                    column(3,
                           checkboxInput("volcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE)
@@ -532,7 +536,16 @@ ui <- fluidPage(
                               width = "90%", height = "500px")
                    
           ),
-          tabPanel("Interactive Volcano Plot", plotlyOutput("volcanoPlot"),
+          tabPanel("Interactive Volcano Plot",
+                   fluidRow(
+                     column(4,
+                            selectInput("iVolcYaxis", "Y-axis metric:",
+                                        choices = c("Adjusted p-value" = "padj",
+                                                    "s-value (requires ashr shrinkage)" = "svalue"),
+                                        selected = "padj")
+                     )
+                   ),
+                   plotlyOutput("volcanoPlot"),
                    plotOutput("geneBoxplot")),
           
           # ---- Explore Gene Sets Tab ----
@@ -566,7 +579,11 @@ ui <- fluidPage(
                             sliderInput("exploreVolcLabelSize", "Label size", 1, 8, 3, step = 0.5),
                             sliderInput("exploreVolcPtSize", "Point size", 0.5, 6, 2, step = 0.5),
                             sliderInput("exploreVolcAlpha", "Background point opacity", 0.01, 1, 0.1, step = 0.01),
-                            checkboxInput("exploreVolcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE)
+                            checkboxInput("exploreVolcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE),
+                            selectInput("exploreVolcYaxis", "Y-axis metric:",
+                                        choices = c("Adjusted p-value" = "padj",
+                                                    "s-value (requires ashr shrinkage)" = "svalue"),
+                                        selected = "padj")
                      ),
                      column(8,
                             tabsetPanel(id = "exploreSubTabs",
@@ -671,6 +688,10 @@ ui <- fluidPage(
                             sliderInput("cmpVolcTop", "Top genes to label", 1, 80, 20, step = 1),
                             sliderInput("cmpVolcPtSz", "Point size", 0.5, 6, 2, step = 0.5),
                             checkboxInput("cmpVolcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE),
+                            selectInput("cmpVolcYaxis", "Y-axis metric:",
+                                        choices = c("Adjusted p-value" = "padj",
+                                                    "s-value (requires ashr shrinkage)" = "svalue"),
+                                        selected = "padj"),
                             actionButton("runCmpVolcBtn", "Draw Volcano", icon = icon("chart-line"))
                      ),
                      column(9,
@@ -1597,6 +1618,7 @@ server <- function(input, output, session) {
             dds,
             contrast = c("Group", isolate(input$contrastNumerator), isolate(input$contrastDenominator)),
             type     = shrink_method,
+            svalue   = (shrink_method == "ashr"),
             res      = res
           )
         }, error = function(e) {
@@ -1665,15 +1687,22 @@ server <- function(input, output, session) {
       # Step 3: Add the gene_length column back to your 'res_entrez' data frame if needed
       res_entrez <- cbind(res_entrez, gene_lengths)
       
-      # Step 4: Add shrunken LFC column if shrinkage was applied
+      # Step 4: Add shrunken LFC and s-value columns if shrinkage was applied
       if (!is.null(res_shrunk)) {
         shrunk_df <- data.frame(
           GeneIDs   = rownames(res_shrunk),
           shrunkLFC = res_shrunk$log2FoldChange,
           stringsAsFactors = FALSE
         )
+        # ashr produces s-values (probability the sign of the LFC is wrong);
+        # normal produces standard padj. Include whichever is present.
+        if ("svalue" %in% colnames(res_shrunk)) {
+          shrunk_df$svalue <- res_shrunk$svalue
+          appendLog("Shrunken LFC and s-value columns added to results table.")
+        } else {
+          appendLog("Shrunken LFC column added to results table.")
+        }
         res_entrez <- dplyr::left_join(res_entrez, shrunk_df, by = "GeneIDs")
-        appendLog("Shrunken LFC column added to results table.")
       }
       
       appendLog("PCA analysis...")
@@ -1738,11 +1767,15 @@ server <- function(input, output, session) {
   output$deTable <- renderDataTable({
     req(analysisResults())
     res_df <- as.data.frame(analysisResults()$res)
-    # Append shrunken LFC column if available
+    # Append shrunken LFC and s-value columns if available
     res_shrunk <- analysisResults()$res_shrunk
     if (!is.null(res_shrunk)) {
       shrunk_lfc <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
       res_df$shrunkLFC <- shrunk_lfc[rownames(res_df)]
+      if ("svalue" %in% colnames(res_shrunk)) {
+        svals <- setNames(res_shrunk$svalue, rownames(res_shrunk))
+        res_df$svalue <- svals[rownames(res_df)]
+      }
     }
     datatable(res_df)
   })
@@ -2464,8 +2497,30 @@ server <- function(input, output, session) {
     
     x_lab <- if (use_shrunk && !is.null(res_shrunk)) "Shrunken log2 Fold Change" else "log2 Fold Change"
     
+    # Y-axis metric: padj or s-value
+    explore_y <- input$exploreVolcYaxis
+    use_svalue_exp <- FALSE
+    if (explore_y == "svalue") {
+      if (!is.null(res_shrunk) && "svalue" %in% colnames(res_shrunk)) {
+        svals <- setNames(res_shrunk$svalue, rownames(res_shrunk))
+        res_df$svalue <- svals[rownames(res_df)]
+        res_df$plot_y <- -log10(res_df$svalue)
+        res_df$plot_y[is.infinite(res_df$plot_y)] <- NA
+        use_svalue_exp <- TRUE
+        y_lab_exp <- "-log10(s-value)"
+      } else {
+        showNotification("s-values not available. Run analysis with ashr shrinkage. Falling back to adjusted p-value.",
+                         type = "warning", duration = 6)
+        res_df$plot_y <- -log10(res_df$padj)
+        y_lab_exp <- "-log10(adjusted p-value)"
+      }
+    } else {
+      res_df$plot_y <- -log10(res_df$padj)
+      y_lab_exp <- "-log10(adjusted p-value)"
+    }
+    
     # Plot background first, then term genes on top
-    ggplot(res_df, aes(x = plot_lfc, y = -log10(padj))) +
+    ggplot(res_df, aes(x = plot_lfc, y = plot_y)) +
       geom_point(data = res_df[!res_df$InTerm, ],
                  colour = "grey80", size = input$exploreVolcPtSize,
                  alpha = input$exploreVolcAlpha) +
@@ -2484,7 +2539,7 @@ server <- function(input, output, session) {
       geom_hline(yintercept = -log10(padj_cutoff), linetype = "dashed", colour = "grey40") +
       theme_minimal(base_size = 13) +
       labs(title = exploreTermLabel(),
-           x = x_lab, y = "-log10(adjusted p-value)")
+           x = x_lab, y = y_lab_exp)
   }, res = 96)
   
   ###---Interactive volcano plot output---###
@@ -2508,10 +2563,29 @@ server <- function(input, output, session) {
     res_df$log10padj <- -log10(res_df$padj)
     res_df$log10padj[is.infinite(res_df$log10padj)] <- NA
     
+    # Y-axis metric: padj or s-value
+    ivolc_y <- input$iVolcYaxis
+    use_svalue <- FALSE
+    if (ivolc_y == "svalue") {
+      if (!is.null(res_shrunk) && "svalue" %in% colnames(res_shrunk)) {
+        svals <- setNames(res_shrunk$svalue, rownames(res_shrunk))
+        res_df$svalue <- svals[rownames(res_df)]
+        res_df$log10sv <- -log10(res_df$svalue)
+        res_df$log10sv[is.infinite(res_df$log10sv)] <- NA
+        use_svalue <- TRUE
+      } else {
+        showNotification("s-values not available. Run analysis with ashr shrinkage. Falling back to adjusted p-value.",
+                         type = "warning", duration = 6)
+      }
+    }
+    y_col_i <- if (use_svalue) "log10sv" else "log10padj"
+    y_lab_i <- if (use_svalue) "-log10 s-value" else "-log10 Adjusted p-value"
+    
     # Thresholding
     lfc_cutoff <- input$lfcThreshold
     padj_cutoff <- input$padjThreshold
     
+    # Significance — always based on padj
     res_df$significance <- "Not significant"
     res_df$significance[res_df$padj < padj_cutoff & res_df$log2FoldChange >= lfc_cutoff] <- "Upregulated"
     res_df$significance[res_df$padj < padj_cutoff & res_df$log2FoldChange <= -lfc_cutoff] <- "Downregulated"
@@ -2534,12 +2608,13 @@ server <- function(input, output, session) {
     p <- plotly::plot_ly(
       data = volcano_data,
       x = ~plot_lfc,
-      y = ~log10padj,
+      y = as.formula(paste0("~", y_col_i)),
       type = "scatter",
       mode = "markers",
       text = ~paste("Gene: ", Gene, "<br>Log2FC: ", signif(log2FoldChange, 3),
                     if (use_shrunk && !is.null(res_shrunk)) paste0("<br>Shrunk Log2FC: ", signif(plot_lfc, 3)) else "",
-                    "<br>padj: ", signif(padj, 4)),
+                    "<br>padj: ", signif(padj, 4),
+                    if (use_svalue) paste0("<br>s-value: ", signif(svalue, 4)) else ""),
       color = ~significance,
       colors = volcano_colors,
       key = ~Gene,
@@ -2549,14 +2624,16 @@ server <- function(input, output, session) {
     
     p <- plotly::event_register(p, "plotly_click")
     
+    y_max <- max(volcano_data[[y_col_i]], na.rm = TRUE)
+    
     plotly::layout(
       p,
       title = "Interactive Volcano Plot",
       xaxis = list(title = x_lab),
-      yaxis = list(title = "-log10 Adjusted p-value"),
+      yaxis = list(title = y_lab_i),
       shapes = list(
-        list(type = "line", x0 = -lfc_cutoff, x1 = -lfc_cutoff, y0 = 0, y1 = max(volcano_data$log10padj, na.rm = TRUE), line = list(dash = "dash")),
-        list(type = "line", x0 =  lfc_cutoff, x1 =  lfc_cutoff, y0 = 0, y1 = max(volcano_data$log10padj, na.rm = TRUE), line = list(dash = "dash")),
+        list(type = "line", x0 = -lfc_cutoff, x1 = -lfc_cutoff, y0 = 0, y1 = y_max, line = list(dash = "dash")),
+        list(type = "line", x0 =  lfc_cutoff, x1 =  lfc_cutoff, y0 = 0, y1 = y_max, line = list(dash = "dash")),
         list(type = "line", y0 = -log10(padj_cutoff), y1 = -log10(padj_cutoff),
              x0 = min(volcano_data$plot_lfc, na.rm = TRUE), x1 = max(volcano_data$plot_lfc, na.rm = TRUE), line = list(dash = "dash"))
       )
@@ -2633,22 +2710,38 @@ server <- function(input, output, session) {
     res_df$log10padj <- -log10(ifelse(padj_was_zero, min_nonzero_padj, res_df$padj))
     res_df$log10p    <- -log10(ifelse(p_was_zero, min_nonzero_p, res_df$pvalue))
     
-    # Flag only true-zero substitutions as capped
-    use_padj <- isTRUE(input$pvalueselect)
-    res_df$capped <- if (use_padj) padj_was_zero else p_was_zero
-    
-    # Decide which p column is active
-    p_col    <- if (use_padj) "padj" else "pvalue"
-    y_col    <- if (use_padj) "log10padj" else "log10p"
-    y_lab    <- if (use_padj) "-Log10 Adjusted P-value" else "-Log10 P-value"
+    # s-values from ashr shrinkage (if available)
+    y_choice <- input$volcYaxis
+    if (y_choice == "svalue") {
+      if (!is.null(res_shrunk) && "svalue" %in% colnames(res_shrunk)) {
+        svals <- setNames(res_shrunk$svalue, rownames(res_shrunk))
+        res_df$svalue <- svals[rownames(res_df)]
+        sv_was_zero <- !is.na(res_df$svalue) & res_df$svalue == 0
+        min_nonzero_sv <- min(res_df$svalue[res_df$svalue > 0], na.rm = TRUE)
+        res_df$log10sv <- -log10(ifelse(sv_was_zero, min_nonzero_sv, res_df$svalue))
+        res_df$capped <- sv_was_zero
+        p_col <- "svalue"; y_col <- "log10sv"; y_lab <- "-Log10 s-value"
+      } else {
+        showNotification("s-values not available. Run analysis with ashr shrinkage enabled. Falling back to adjusted p-value.",
+                         type = "warning", duration = 6)
+        y_choice <- "padj"
+      }
+    }
+    if (y_choice == "padj") {
+      res_df$capped <- padj_was_zero
+      p_col <- "padj"; y_col <- "log10padj"; y_lab <- "-Log10 Adjusted P-value"
+    } else if (y_choice == "pvalue") {
+      res_df$capped <- p_was_zero
+      p_col <- "pvalue"; y_col <- "log10p"; y_lab <- "-Log10 P-value"
+    }
     
     # Thresholds
     lfc_cutoff <- input$lfcThreshold
-    p_cutoff   <- input$padjThreshold  # keep your existing input name as the cutoff value
+    p_cutoff   <- input$padjThreshold
     
-    # Significance (based on chosen p metric — always uses original LFC for the call)
+    # Significance — always based on original padj regardless of y-axis choice
     res_df$significance <- "Not significant"
-    sig_ok <- !is.na(res_df[[p_col]]) & (res_df[[p_col]] < p_cutoff)
+    sig_ok <- !is.na(res_df$padj) & (res_df$padj < p_cutoff)
     
     res_df$significance[sig_ok & res_df$log2FoldChange >=  lfc_cutoff] <- "Upregulated"
     res_df$significance[sig_ok & res_df$log2FoldChange <= -lfc_cutoff] <- "Downregulated"
@@ -2726,6 +2819,10 @@ server <- function(input, output, session) {
       if (!is.null(res_shrunk)) {
         shrunk_lfc <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
         res_df$shrunkLFC <- shrunk_lfc[rownames(res_df)]
+        if ("svalue" %in% colnames(res_shrunk)) {
+          svals <- setNames(res_shrunk$svalue, rownames(res_shrunk))
+          res_df$svalue <- svals[rownames(res_df)]
+        }
       }
       utils::write.csv(res_df, f, row.names = TRUE)
     }
@@ -3085,7 +3182,8 @@ server <- function(input, output, session) {
     # Apply LFC shrinkage if requested
     if (isTRUE(apply_shrink)) {
       res_shrunk_c <- tryCatch({
-        lfcShrink(dds, contrast = contrast_vec, type = shrink_method, res = res_c)
+        lfcShrink(dds, contrast = contrast_vec, type = shrink_method, 
+                  svalue = (shrink_method == "ashr"), res = res_c)
       }, error = function(e) NULL)
       
       if (!is.null(res_shrunk_c)) {
@@ -3497,23 +3595,29 @@ server <- function(input, output, session) {
       res_c <- res_c[!is.na(res_c$padj) & !is.na(res_c$log2FoldChange), ]
       res_c$GeneID <- rownames(res_c)
       
-      # Optionally compute shrunken LFC for x-axis
-      use_shrunk <- isTRUE(input$cmpVolcUseShrunk) && isTRUE(isolate(input$applyLfcShrink))
-      if (use_shrunk) {
+      # Optionally compute shrunken LFC for x-axis and/or s-values for y-axis
+      want_shrunk_x <- isTRUE(input$cmpVolcUseShrunk) && isTRUE(isolate(input$applyLfcShrink))
+      want_svalue_y <- isTRUE(input$cmpVolcYaxis == "svalue")
+      need_shrink   <- want_shrunk_x || want_svalue_y
+      
+      res_shrunk_c <- NULL
+      use_shrunk <- FALSE
+      use_svalue_cmp <- FALSE
+      
+      if (need_shrink && isTRUE(isolate(input$applyLfcShrink))) {
         res_raw <- results(dds, contrast = c("Group", spec$numerator, spec$denominator), alpha = spec$padj)
         res_shrunk_c <- tryCatch({
+          sm <- isolate(input$shrinkMethod)
           lfcShrink(dds, contrast = c("Group", spec$numerator, spec$denominator),
-                    type = isolate(input$shrinkMethod), res = res_raw)
+                    type = sm, svalue = (sm == "ashr"), res = res_raw)
         }, error = function(e) NULL)
-        
-        if (!is.null(res_shrunk_c)) {
-          shrunk_lfc <- setNames(res_shrunk_c$log2FoldChange, rownames(res_shrunk_c))
-          res_c$plot_lfc <- shrunk_lfc[rownames(res_c)]
-        } else {
-          res_c$plot_lfc <- res_c$log2FoldChange
-          use_shrunk <- FALSE
-          showNotification("LFC shrinkage failed for this contrast. Showing unshrunk LFCs.", type = "warning")
-        }
+      }
+      
+      # X-axis: shrunken LFC or original
+      if (want_shrunk_x && !is.null(res_shrunk_c)) {
+        shrunk_lfc <- setNames(res_shrunk_c$log2FoldChange, rownames(res_shrunk_c))
+        res_c$plot_lfc <- shrunk_lfc[rownames(res_c)]
+        use_shrunk <- TRUE
       } else {
         res_c$plot_lfc <- res_c$log2FoldChange
         if (isTRUE(input$cmpVolcUseShrunk) && !isTRUE(isolate(input$applyLfcShrink))) {
@@ -3521,14 +3625,33 @@ server <- function(input, output, session) {
         }
       }
       
+      # Y-axis: s-value or padj
+      if (want_svalue_y && !is.null(res_shrunk_c) && "svalue" %in% colnames(res_shrunk_c)) {
+        svals <- setNames(res_shrunk_c$svalue, rownames(res_shrunk_c))
+        res_c$svalue <- svals[rownames(res_c)]
+        use_svalue_cmp <- TRUE
+      } else if (want_svalue_y) {
+        showNotification("s-values not available. Enable ashr shrinkage and re-run. Falling back to adjusted p-value.",
+                         type = "warning", duration = 6)
+      }
+      
       # Compute -log10(padj), handling padj == 0
-      # Only genes with literal zero p-values get a substitute value and the "capped" flag
       padj_was_zero <- res_c$padj == 0
       min_nonzero_padj <- min(res_c$padj[res_c$padj > 0], na.rm = TRUE)
       res_c$padj_safe <- ifelse(padj_was_zero, min_nonzero_padj, res_c$padj)
       res_c$neg_log10_padj <- -log10(res_c$padj_safe)
-      res_c$neg_log10_padj_plot <- res_c$neg_log10_padj
-      res_c$capped <- padj_was_zero
+      
+      if (use_svalue_cmp) {
+        sv_was_zero <- !is.na(res_c$svalue) & res_c$svalue == 0
+        min_nonzero_sv <- min(res_c$svalue[res_c$svalue > 0], na.rm = TRUE)
+        res_c$plot_y <- -log10(ifelse(sv_was_zero, min_nonzero_sv, res_c$svalue))
+        res_c$capped <- sv_was_zero
+        y_lab_cmp <- "-log10(s-value)"
+      } else {
+        res_c$plot_y <- res_c$neg_log10_padj
+        res_c$capped <- padj_was_zero
+        y_lab_cmp <- "-log10(adjusted p-value)"
+      }
       
       # Determine shared vs unique membership with concordance for shared genes.
       # The context (input$vennVolcContext) controls which contrasts count as "other":
@@ -3619,7 +3742,7 @@ server <- function(input, output, session) {
       
       x_lab <- if (use_shrunk) "Shrunken Log2 Fold Change" else "Log2 Fold Change"
       
-      ggplot(res_c, aes(x = plot_lfc, y = neg_log10_padj_plot, colour = Category, label = label)) +
+      ggplot(res_c, aes(x = plot_lfc, y = plot_y, colour = Category, label = label)) +
         {if (any(res_c$capped, na.rm = TRUE))
           list(
             geom_point(aes(shape = capped), size = input$cmpVolcPtSz, alpha = 0.7),
@@ -3636,7 +3759,7 @@ server <- function(input, output, session) {
         geom_hline(yintercept = -log10(spec$padj), linetype = "dashed", colour = "grey40") +
         theme_minimal(base_size = 13) +
         labs(title = paste("Volcano:", focal),
-             x = x_lab, y = "-log10(adjusted p-value)",
+             x = x_lab, y = y_lab_cmp,
              colour = "Gene category")
     })
   })
