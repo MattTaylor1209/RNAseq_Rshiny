@@ -629,6 +629,8 @@ ui <- fluidPage(
                      column(3,
                             selectizeInput("bpGene", "Select gene:", choices = NULL,
                                            options = list(placeholder = "Type to search...")),
+                            selectInput("bpGroups", "Groups to include:",
+                                        choices = NULL, selected = NULL, multiple = TRUE),
                             hr(),
                             h5("Aesthetics"),
                             selectInput("bpPalette", "Colour palette:",
@@ -3313,7 +3315,7 @@ server <- function(input, output, session) {
   # BOXPLOT TAB – server logic
   # ============================================================
   
-  # Populate the gene selectize input when analysis completes
+  # Populate the gene selectize input and group selector when analysis completes
   observeEvent(analysisResults(), {
     req(analysisResults())
     gene_ids <- rownames(assay(analysisResults()$vsd))
@@ -3321,6 +3323,11 @@ server <- function(input, output, session) {
                          choices  = gene_ids,
                          selected = NULL,
                          server   = TRUE)
+    
+    available_groups <- unique(as.character(colData(analysisResults()$dds)$Group))
+    updateSelectInput(session, "bpGroups",
+                      choices  = available_groups,
+                      selected = available_groups)
   })
   
   # Reactive: build the boxplot data frame for the selected gene
@@ -3329,16 +3336,23 @@ server <- function(input, output, session) {
     vsd <- analysisResults()$vsd
     validate(need(input$bpGene %in% rownames(assay(vsd)),
                   "Selected gene not found in VST matrix."))
+    validate(need(length(input$bpGroups) > 0,
+                  "Please select at least one group to display."))
     
     expr_vals <- assay(vsd)[input$bpGene, ]
     meta      <- as.data.frame(colData(vsd))
     
-    data.frame(
+    df <- data.frame(
       Sample     = colnames(vsd),
       Expression = as.numeric(expr_vals),
       Group      = meta$Group,
       stringsAsFactors = FALSE
     )
+    
+    # Filter to selected groups and preserve factor level order
+    df <- df[df$Group %in% input$bpGroups, , drop = FALSE]
+    df$Group <- factor(df$Group, levels = input$bpGroups)
+    df
   })
   
   # Reactive: build the ggplot object (shared between render and download)
@@ -3388,7 +3402,7 @@ server <- function(input, output, session) {
         outlier.size = if (input$bpOutlierSize == 0) NA else input$bpOutlierSize,
         outlier.shape = if (input$bpOutlierSize == 0) NA else 16
       ) +
-      geom_jitter(aes(colour = Group),
+      geom_jitter(colour = "black",
                   width = input$bpJitterWidth,
                   size  = input$bpPointSize,
                   alpha = input$bpPointAlpha) +
@@ -3399,6 +3413,7 @@ server <- function(input, output, session) {
         plot.title      = element_text(face = "bold", size = input$bpTitleSize),
         axis.title      = element_text(face = "bold", size = input$bpAxisTitleSize),
         axis.text       = element_text(size = input$bpAxisTextSize),
+        axis.text.x = element_blank(),
         legend.text     = element_text(size = input$bpLegendTextSize),
         legend.title    = element_text(face = "bold", size = input$bpLegendTextSize + 1),
         panel.grid.major.x = element_blank()
