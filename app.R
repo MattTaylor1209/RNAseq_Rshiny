@@ -300,30 +300,30 @@ ui <- fluidPage(
           tabPanel("Sample Info", tableOutput("sampleInfo")),
           tabPanel("PCA",
                    fluidRow(
-                   column(2,
-                          sliderInput("pointsize", "Point size", min = 0, max = 20, step = 0.5, 
-                                      value = 10)
-                   ),
-                   column(2,
-                          sliderInput("labelsize", "Label font size", min = 0, max = 20, step = 0.5, 
-                                      value = 10)
-                   ),
-                   column(2,
-                          sliderInput("legendtitlesize", "Legend title size", min = 0, max = 20, step = 0.5, 
-                                      value = 10)
-                   ),
-                   column(2,
-                          sliderInput("axistitlesize", "Axis title size", min = 0, max = 30, step = 0.5, 
-                                      value = 14)
-                   ),
-                   column(2,
-                          sliderInput("axistextsize", "Axis text size", min = 0, max = 20, step = 0.5, 
-                                      value = 10),
-                   ),
-                   column(2,
-                          sliderInput("legendtextsize", "Legend text size", min = 0, max = 20, step = 0.5, 
-                                      value = 10),
-                   )),
+                     column(2,
+                            sliderInput("pointsize", "Point size", min = 0, max = 20, step = 0.5, 
+                                        value = 10)
+                     ),
+                     column(2,
+                            sliderInput("labelsize", "Label font size", min = 0, max = 20, step = 0.5, 
+                                        value = 10)
+                     ),
+                     column(2,
+                            sliderInput("legendtitlesize", "Legend title size", min = 0, max = 20, step = 0.5, 
+                                        value = 10)
+                     ),
+                     column(2,
+                            sliderInput("axistitlesize", "Axis title size", min = 0, max = 30, step = 0.5, 
+                                        value = 14)
+                     ),
+                     column(2,
+                            sliderInput("axistextsize", "Axis text size", min = 0, max = 20, step = 0.5, 
+                                        value = 10),
+                     ),
+                     column(2,
+                            sliderInput("legendtextsize", "Legend text size", min = 0, max = 20, step = 0.5, 
+                                        value = 10),
+                     )),
                    fluidRow(
                      plotOutput("pcaPlot")
                    ),
@@ -611,6 +611,78 @@ ui <- fluidPage(
                                                  plotOutput("exploreVolcano", height = "500px")
                                         )
                             )
+                     )
+                   )
+          ),
+          
+          # ---- Boxplot Tab ----
+          tabPanel("Boxplot",
+                   fluidRow(
+                     column(12,
+                            h4("Gene Expression Boxplot"),
+                            p("Select a gene to view its VST-normalised expression across groups.")
+                     )
+                   ),
+                   hr(),
+                   fluidRow(
+                     # --- Controls column ---
+                     column(3,
+                            selectizeInput("bpGene", "Select gene:", choices = NULL,
+                                           options = list(placeholder = "Type to search...")),
+                            hr(),
+                            h5("Aesthetics"),
+                            selectInput("bpPalette", "Colour palette:",
+                                        choices = c("Set2" = "Set2",
+                                                    "Paired" = "Paired",
+                                                    "Dark2" = "Dark2",
+                                                    "Pastel1" = "Pastel1",
+                                                    "Set1" = "Set1",
+                                                    "Set3" = "Set3",
+                                                    "npg (Nature)" = "npg",
+                                                    "aaas (Science)" = "aaas",
+                                                    "lancet" = "lancet",
+                                                    "jco (JCO)" = "jco",
+                                                    "d3" = "d3",
+                                                    "viridis" = "viridis"),
+                                        selected = "Set2"),
+                            sliderInput("bpFillAlpha", "Box fill opacity",
+                                        min = 0, max = 1, value = 0.5, step = 0.05),
+                            sliderInput("bpPointSize", "Point size",
+                                        min = 0.5, max = 8, value = 3, step = 0.5),
+                            sliderInput("bpPointAlpha", "Point opacity",
+                                        min = 0, max = 1, value = 0.8, step = 0.05),
+                            sliderInput("bpJitterWidth", "Jitter width",
+                                        min = 0, max = 0.5, value = 0.2, step = 0.05),
+                            sliderInput("bpLineWidth", "Box line thickness",
+                                        min = 0.1, max = 3, value = 0.6, step = 0.1),
+                            sliderInput("bpOutlierSize", "Outlier point size (0 = hide)",
+                                        min = 0, max = 5, value = 0, step = 0.5),
+                            hr(),
+                            h5("Text & axes"),
+                            sliderInput("bpTitleSize", "Title font size",
+                                        min = 8, max = 30, value = 16, step = 1),
+                            sliderInput("bpAxisTitleSize", "Axis title size",
+                                        min = 8, max = 24, value = 14, step = 1),
+                            sliderInput("bpAxisTextSize", "Axis text size",
+                                        min = 6, max = 20, value = 12, step = 1),
+                            sliderInput("bpLegendTextSize", "Legend text size",
+                                        min = 6, max = 20, value = 11, step = 1),
+                            numericInput("bpYmin", "Y-axis min (leave blank for auto)",
+                                         value = NA),
+                            numericInput("bpYmax", "Y-axis max (leave blank for auto)",
+                                         value = NA),
+                            hr(),
+                            h5("Plot dimensions"),
+                            sliderInput("bpWidth", "Plot width (px)",
+                                        min = 300, max = 1600, value = 700, step = 50),
+                            sliderInput("bpHeight", "Plot height (px)",
+                                        min = 200, max = 1200, value = 500, step = 50),
+                            numericInput("bpDPI", "Download DPI", value = 300, min = 72, max = 600, step = 50),
+                            downloadButton("dl_boxplot", "Download PNG")
+                     ),
+                     # --- Plot column ---
+                     column(9,
+                            uiOutput("bpPlotUI")
                      )
                    )
           ),
@@ -3234,6 +3306,149 @@ server <- function(input, output, session) {
       overlay <- pngs[grepl(paste0("^", pid, ".*pathview.*\\.png$"), basename(pngs))]
       png_file <- if (length(overlay)) overlay[which.max(file.mtime(overlay))] else pngs[which.max(file.mtime(pngs))]
       file.copy(png_file, file, overwrite = TRUE)
+    }
+  )
+  
+  # ============================================================
+  # BOXPLOT TAB – server logic
+  # ============================================================
+  
+  # Populate the gene selectize input when analysis completes
+  observeEvent(analysisResults(), {
+    req(analysisResults())
+    gene_ids <- rownames(assay(analysisResults()$vsd))
+    updateSelectizeInput(session, "bpGene",
+                         choices  = gene_ids,
+                         selected = NULL,
+                         server   = TRUE)
+  })
+  
+  # Reactive: build the boxplot data frame for the selected gene
+  bpData <- reactive({
+    req(analysisResults(), input$bpGene)
+    vsd <- analysisResults()$vsd
+    validate(need(input$bpGene %in% rownames(assay(vsd)),
+                  "Selected gene not found in VST matrix."))
+    
+    expr_vals <- assay(vsd)[input$bpGene, ]
+    meta      <- as.data.frame(colData(vsd))
+    
+    data.frame(
+      Sample     = colnames(vsd),
+      Expression = as.numeric(expr_vals),
+      Group      = meta$Group,
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  # Reactive: build the ggplot object (shared between render and download)
+  bpPlotObj <- reactive({
+    req(bpData())
+    df <- bpData()
+    
+    n_groups <- length(unique(df$Group))
+    
+    # Build colour vector from chosen palette
+    pal_name <- input$bpPalette
+    
+    if (pal_name %in% c("npg", "aaas", "lancet", "jco", "d3")) {
+      # ggsci palettes
+      fill_scale  <- switch(pal_name,
+                            npg    = ggsci::scale_fill_npg(),
+                            aaas   = ggsci::scale_fill_aaas(),
+                            lancet = ggsci::scale_fill_lancet(),
+                            jco    = ggsci::scale_fill_jco(),
+                            d3     = ggsci::scale_fill_d3())
+      color_scale <- switch(pal_name,
+                            npg    = ggsci::scale_color_npg(),
+                            aaas   = ggsci::scale_color_aaas(),
+                            lancet = ggsci::scale_color_lancet(),
+                            jco    = ggsci::scale_color_jco(),
+                            d3     = ggsci::scale_color_d3())
+    } else if (pal_name == "viridis") {
+      fill_scale  <- scale_fill_viridis_d()
+      color_scale <- scale_color_viridis_d()
+    } else {
+      # RColorBrewer palettes
+      max_n <- RColorBrewer::brewer.pal.info[pal_name, "maxcolors"]
+      if (n_groups <= max_n) {
+        cols <- RColorBrewer::brewer.pal(max(3, n_groups), pal_name)[1:n_groups]
+      } else {
+        cols <- colorRampPalette(RColorBrewer::brewer.pal(max_n, pal_name))(n_groups)
+      }
+      names(cols) <- levels(df$Group)
+      fill_scale  <- scale_fill_manual(values = cols)
+      color_scale <- scale_color_manual(values = cols)
+    }
+    
+    p <- ggplot(df, aes(x = Group, y = Expression, fill = Group)) +
+      geom_boxplot(
+        alpha        = input$bpFillAlpha,
+        lwd          = input$bpLineWidth,
+        outlier.size = if (input$bpOutlierSize == 0) NA else input$bpOutlierSize,
+        outlier.shape = if (input$bpOutlierSize == 0) NA else 16
+      ) +
+      geom_jitter(aes(colour = Group),
+                  width = input$bpJitterWidth,
+                  size  = input$bpPointSize,
+                  alpha = input$bpPointAlpha) +
+      fill_scale +
+      color_scale +
+      theme_minimal(base_size = input$bpAxisTextSize) +
+      theme(
+        plot.title      = element_text(face = "bold", size = input$bpTitleSize),
+        axis.title      = element_text(face = "bold", size = input$bpAxisTitleSize),
+        axis.text       = element_text(size = input$bpAxisTextSize),
+        legend.text     = element_text(size = input$bpLegendTextSize),
+        legend.title    = element_text(face = "bold", size = input$bpLegendTextSize + 1),
+        panel.grid.major.x = element_blank()
+      ) +
+      labs(
+        title = paste("Expression of", input$bpGene),
+        x     = "Group",
+        y     = "VST-normalised expression"
+      )
+    
+    # Apply manual Y-axis limits if provided
+    y_min <- input$bpYmin
+    y_max <- input$bpYmax
+    if (!is.na(y_min) || !is.na(y_max)) {
+      p <- p + coord_cartesian(
+        ylim = c(
+          if (!is.na(y_min)) y_min else NULL,
+          if (!is.na(y_max)) y_max else NULL
+        )
+      )
+    }
+    
+    p
+  })
+  
+  # Dynamic UI wrapper so width/height respond to sliders
+  output$bpPlotUI <- renderUI({
+    plotOutput("bpPlot",
+               width  = paste0(input$bpWidth, "px"),
+               height = paste0(input$bpHeight, "px"))
+  })
+  
+  # Render the plot
+  output$bpPlot <- renderPlot({
+    req(bpPlotObj())
+    bpPlotObj()
+  }, res = 96)
+  
+  # Download handler
+  output$dl_boxplot <- downloadHandler(
+    filename = function() {
+      paste0("boxplot_", input$bpGene, "_", Sys.Date(), ".png")
+    },
+    content = function(file) {
+      ggsave(file, plot = bpPlotObj(),
+             width  = input$bpWidth / 96,
+             height = input$bpHeight / 96,
+             dpi    = input$bpDPI,
+             device = "png",
+             bg     = "white")
     }
   )
   
