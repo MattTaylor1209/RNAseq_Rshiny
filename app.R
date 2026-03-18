@@ -193,6 +193,8 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 options(shiny.maxRequestSize = 50 * 1024^2)  # 50 MB
 
 
+#### UI ####
+
 ui <- fluidPage(
   titlePanel("RNA-seq Analysis"),
   
@@ -296,7 +298,8 @@ ui <- fluidPage(
                    h4("Log"),
                    verbatimTextOutput("log", )),
           tabPanel("Sample Info", tableOutput("sampleInfo")),
-          tabPanel("PCA", 
+          tabPanel("PCA",
+                   fluidRow(
                    column(2,
                           sliderInput("pointsize", "Point size", min = 0, max = 20, step = 0.5, 
                                       value = 10)
@@ -320,8 +323,14 @@ ui <- fluidPage(
                    column(2,
                           sliderInput("legendtextsize", "Legend text size", min = 0, max = 20, step = 0.5, 
                                       value = 10),
+                   )),
+                   fluidRow(
+                     plotOutput("pcaPlot")
                    ),
-                   plotOutput("pcaPlot")),
+                   conditionalPanel(
+                     condition = "output.analysisReady",
+                     downloadButton("dl_vsd", "Download vst-normalised count matrix")
+                   )),
           tabPanel("DE Results", dataTableOutput("deTable"),
                    conditionalPanel(
                      condition = "output.analysisReady",
@@ -1866,6 +1875,19 @@ server <- function(input, output, session) {
         y = paste0("PC2 (", percentVar[2], "% variance)")
       )
   })
+  
+  # Download VSD count matrix
+  output$dl_vsd <- downloadHandler(
+    filename = function() "vst_normalised_count_matrix.csv",
+    content  = function(f) {
+      req(analysisResults())
+      vsd <- analysisResults()$vsd
+      vsd_matrix <- assay(vsd)
+      if (is.null(vsd_matrix)) return()
+      vsd_matrix <- as_tibble(vsd_matrix, rownames = "GeneID")
+      readr::write_csv(vsd_matrix, f)
+    }
+  )
   
   # DE results table
   output$deTable <- renderDataTable({
