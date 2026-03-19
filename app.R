@@ -333,6 +333,8 @@ ui <- fluidPage(
                    )),
           tabPanel("Other QC",
                    fluidRow(
+                     h3("Library sizes"),
+                     plotOutput("libSizePlot"),
                      h3("Unfiltered counts"),
                      plotOutput("density_unfiltered"),
                      h3("Filtered counts (if filtering selected)"),
@@ -2007,6 +2009,29 @@ server <- function(input, output, session) {
       theme_minimal() +
       scale_colour_colorblind()
   })
+  
+  
+  # ---- QC: Library size barplot ----
+  output$libSizePlot <- renderPlot({
+    req(analysisResults())
+    dds <- analysisResults()$unfiltered_dds
+    
+    lib_df <- data.frame(
+      Sample = colnames(dds),
+      Group  = as.character(colData(dds)$Group),
+      LibSize = colSums(counts(dds))
+    )
+    # Preserve sample order from the data
+    lib_df$Sample <- factor(lib_df$Sample, levels = lib_df$Sample)
+    
+    ggplot(lib_df, aes(x = Sample, y = LibSize / 1e6, fill = Group)) +
+      geom_col() +
+      scale_fill_colorblind() +
+      theme_minimal(base_size = 13) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "bold")) +
+      labs(x = NULL, y = "Library size (millions of reads)", title = "Total counts per sample")
+  })
+  
   
   # Download VSD count matrix
   output$dl_vsd <- downloadHandler(
