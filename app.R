@@ -331,6 +331,13 @@ ui <- fluidPage(
                      condition = "output.analysisReady",
                      downloadButton("dl_vsd", "Download vst-normalised count matrix")
                    )),
+          tabPanel("Other QC",
+                   fluidRow(
+                     h3("Unfiltered counts"),
+                     plotOutput("density_unfiltered"),
+                     h3("Filtered counts (if filtering selected)"),
+                     plotOutput("density_filtered"),
+                   )),
           tabPanel("DE Results", dataTableOutput("deTable"),
                    conditionalPanel(
                      condition = "output.analysisReady",
@@ -1741,6 +1748,9 @@ server <- function(input, output, session) {
       }
       incProgress(0.1)
       
+      # Store unfiltered dds object for QC
+      unfiltered_dds <- dds
+      
       filt <- isTRUE(input$filterlow)
       
       if (filt) {
@@ -1912,7 +1922,7 @@ server <- function(input, output, session) {
     })
     # Output from reactive expression
     list(dds = dds, res = res, res_shrunk = res_shrunk, vsd = vsd, pca_df = pca_df, percentVar = percentVar,
-         res_entrez = res_entrez)
+         res_entrez = res_entrez, unfiltered_dds = unfiltered_dds)
     
   })
   
@@ -1948,6 +1958,54 @@ server <- function(input, output, session) {
         x = paste0("PC1 (", percentVar[1], "% variance)"),
         y = paste0("PC2 (", percentVar[2], "% variance)")
       )
+  })
+  
+  # Density count distribution plot (unfiltered)
+  output$density_unfiltered <- renderPlot({
+    req(analysisResults())
+    unfiltered_dds <- analysisResults()$unfiltered_dds
+    
+    # Extract counts and pivot to long format
+    count_mat <- counts(unfiltered_dds)
+    col_dat   <- as.data.frame(colData(unfiltered_dds))
+    
+    long_df <- as.data.frame(count_mat) |>
+      tibble::rownames_to_column("gene") |>
+      tidyr::pivot_longer(-gene, names_to = "sample", values_to = "counts") |>
+      dplyr::left_join(
+        col_dat |> tibble::rownames_to_column("sample") |> dplyr::select(sample, Group),
+        by = "sample"
+      )
+    
+    ggplot(long_df, aes(x = counts + 1, group = sample, color = Group)) +
+      geom_density() +
+      scale_x_log10() +
+      theme_minimal() +
+      scale_colour_colorblind()
+  })
+  
+  # Density count distribution plot (filtered)
+  output$density_filtered <- renderPlot({
+    req(analysisResults())
+    filtered_dds <- analysisResults()$dds
+    
+    # Extract counts and pivot to long format
+    count_mat <- counts(filtered_dds)
+    col_dat   <- as.data.frame(colData(filtered_dds))
+    
+    long_df <- as.data.frame(count_mat) |>
+      tibble::rownames_to_column("gene") |>
+      tidyr::pivot_longer(-gene, names_to = "sample", values_to = "counts") |>
+      dplyr::left_join(
+        col_dat |> tibble::rownames_to_column("sample") |> dplyr::select(sample, Group),
+        by = "sample"
+      )
+    
+    ggplot(long_df, aes(x = counts + 1, group = sample, color = Group)) +
+      geom_density() +
+      scale_x_log10() +
+      theme_minimal() +
+      scale_colour_colorblind()
   })
   
   # Download VSD count matrix
