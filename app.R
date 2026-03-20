@@ -200,6 +200,16 @@ ui <- fluidPage(
   
   sidebarLayout(
     sidebarPanel(width = 3,
+                 selectInput("organism", "Select organism:",
+                             choices = c(
+                               "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
+                               "Mouse (Mus musculus)" = "org.Mm.eg.db",
+                               "Human (Homo sapiens)" = "org.Hs.eg.db",
+                               "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db",
+                               "Zebrafish (Danio rerio)" = "org.Dr.eg.db"
+                             ),
+                             selected = "org.Dm.eg.db"
+                 ),
                  fileInput("countsFile", "Upload Count Data (.rds, .csv, .tsv, .txt, .xls)",
                            accept = c(".rds", ".csv", ".tsv", ".txt", ".xls")),
                  conditionalPanel(
@@ -243,16 +253,6 @@ ui <- fluidPage(
                    helpText("Deselect samples to exclude them from all analyses."),
                    uiOutput("sampleFilterUI"),
                    tags$hr()
-                 ),
-                 selectInput("organism", "Select organism:",
-                             choices = c(
-                               "Rat (Rattus norvegicus)" = "org.Rn.eg.db",
-                               "Mouse (Mus musculus)" = "org.Mm.eg.db",
-                               "Human (Homo sapiens)" = "org.Hs.eg.db",
-                               "Drosophila (Drosophila melanogaster)" = "org.Dm.eg.db",
-                               "Zebrafish (Danio rerio)" = "org.Dr.eg.db"
-                             ),
-                             selected = "org.Dm.eg.db"
                  ),
                  numericInput("lfcThreshold", "log2 Fold Change threshold", value = 0.5, min = 0),
                  numericInput("padjThreshold", "Adjusted p-value threshold (FDR)", value = 0.05, min = 0, max = 1),
