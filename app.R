@@ -844,7 +844,7 @@ ui <- fluidPage(
                    
                    # --- Gene tables from Venn regions ---
                    fluidRow(
-                     column(12, h4("Explore Gene Sets from Diagram"))
+                     column(12, h4("Explore Gene Sets from Venn Diagram"))
                    ),
                    fluidRow(
                      column(4,
