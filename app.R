@@ -219,7 +219,7 @@ ui <- fluidPage(
                               selected = "upload", inline = TRUE),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'upload'",
-                   fileInput("sampleInfoFile", "Upload SampleInfo.txt", accept = c(".txt", ".tsv"))
+                   fileInput("sampleInfoFile", "Upload SampleInfo file", accept = c(".txt", ".tsv", ".csv"))
                  ),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'manual'",
@@ -339,6 +339,10 @@ ui <- fluidPage(
                      plotOutput("density_unfiltered"),
                      h3("Filtered counts (if filtering selected)"),
                      plotOutput("density_filtered"),
+                     h3("Distribution of unadjusted P-values"),
+                     plotOutput("pvalueplot"),
+                     h3("Distribution of adjusted P-values"),
+                     plotOutput("padjplot"),
                    )),
           tabPanel("DE Results", dataTableOutput("deTable"),
                    conditionalPanel(
@@ -1928,6 +1932,8 @@ server <- function(input, output, session) {
     
   })
   
+  ####----PCA----####
+  
   
   # PCA plot
   output$pcaPlot <- renderPlot({
@@ -1961,6 +1967,21 @@ server <- function(input, output, session) {
         y = paste0("PC2 (", percentVar[2], "% variance)")
       )
   })
+  
+  # Download VSD count matrix
+  output$dl_vsd <- downloadHandler(
+    filename = function() "vst_normalised_count_matrix.csv",
+    content  = function(f) {
+      req(analysisResults())
+      vsd <- analysisResults()$vsd
+      vsd_matrix <- assay(vsd)
+      if (is.null(vsd_matrix)) return()
+      vsd_matrix <- as_tibble(vsd_matrix, rownames = "GeneID")
+      readr::write_csv(vsd_matrix, f)
+    }
+  )
+  
+  ####----Other QC Plots----####
   
   # Density count distribution plot (unfiltered)
   output$density_unfiltered <- renderPlot({
@@ -2011,7 +2032,8 @@ server <- function(input, output, session) {
   })
   
   
-  # ---- QC: Library size barplot ----
+  # QC: Library size barplot 
+  
   output$libSizePlot <- renderPlot({
     req(analysisResults())
     dds <- analysisResults()$unfiltered_dds
@@ -2033,18 +2055,44 @@ server <- function(input, output, session) {
   })
   
   
-  # Download VSD count matrix
-  output$dl_vsd <- downloadHandler(
-    filename = function() "vst_normalised_count_matrix.csv",
-    content  = function(f) {
-      req(analysisResults())
-      vsd <- analysisResults()$vsd
-      vsd_matrix <- assay(vsd)
-      if (is.null(vsd_matrix)) return()
-      vsd_matrix <- as_tibble(vsd_matrix, rownames = "GeneID")
-      readr::write_csv(vsd_matrix, f)
-    }
-  )
+  # Histogram of p-values
+  
+  output$pvalueplot <- renderPlot({
+    req(analysisResults())
+    
+    res <- analysisResults()$res
+    
+    res_df <- as.data.frame(res)
+    
+    ggplot(res_df[!is.na(res_df$pvalue), ], aes(x = pvalue)) +
+      geom_histogram(alpha=.5, position='identity', bins = 50) +
+      labs(title='Histogram of unadjusted p-values') +
+      xlab('Unadjusted p-values') +
+      coord_cartesian(xlim = c(-0.0005, 1.0005)) + 
+      theme_minimal()
+    
+  })
+  
+  # Histogram of adjusted p-values
+  
+  output$padjplot <- renderPlot({
+    req(analysisResults())
+    
+    res <- analysisResults()$res
+    
+    res_df <- as.data.frame(res)
+    
+    ggplot(res_df[!is.na(res_df$padj), ], aes(x = padj)) +
+      geom_histogram(alpha=.5, position='identity', bins = 50) +
+      labs(title='Histogram of adjusted p-values') +
+      xlab('Adjusted p-values') +
+      coord_cartesian(xlim = c(-0.0005, 1.0005)) +
+      theme_minimal()
+    
+  })
+  
+  
+  ####----DE results table----####
   
   # DE results table
   output$deTable <- renderDataTable({
@@ -2062,6 +2110,10 @@ server <- function(input, output, session) {
     }
     datatable(res_df)
   })
+  
+  
+  
+  ####----Heatmap----####
   
   # Update heatmap group choices when analysis results are available
   observeEvent(analysisResults(), {
@@ -2190,7 +2242,7 @@ server <- function(input, output, session) {
   }, res = 96)
   
   
-  ###---GSEA---###
+  ####----GSEA----####
   
   gseaResults <- eventReactive(input$runGSEA, {
     withProgress(message = "Running GSEA analysis", value = 0, {
@@ -2359,7 +2411,7 @@ server <- function(input, output, session) {
     }
   )
   
-  ###---GO---###
+  ####----GO----####
   
   goSpeciesCode <- reactive({
     org <- input$organism
@@ -2464,7 +2516,7 @@ server <- function(input, output, session) {
   )
   
   # ============================================================
-  # EXPLORE GENE SETS – server logic
+  ####---- EXPLORE GENE SETS – server logic ----####
   # ============================================================
   
   exploreGenes <- reactiveVal(NULL)  # data.frame with at least GeneSymbol column
@@ -2698,7 +2750,7 @@ server <- function(input, output, session) {
     
   }, res = 96)
   
-  # --- Boxplots ---
+  #### ---- Boxplots ---- ####
   output$exploreBoxplotGeneUI <- renderUI({
     req(exploreGenes())
     genes <- exploreGenes()$GeneSymbol
@@ -2741,7 +2793,7 @@ server <- function(input, output, session) {
       theme(legend.position = "bottom")
   })
   
-  # --- Volcano with highlighted genes ---
+  ##### ---- Volcano with highlighted genes ---- #####
   output$exploreVolcano <- renderPlot({
     req(exploreGenes(), analysisResults())
     
@@ -2844,7 +2896,7 @@ server <- function(input, output, session) {
            x = x_lab, y = y_lab_exp)
   }, res = 96)
   
-  ###---Interactive volcano plot output---###
+  ####----Interactive volcano plot output----####
   
   output$volcanoPlot <- renderPlotly({
     req(analysisResults())
@@ -2972,7 +3024,7 @@ server <- function(input, output, session) {
       )
   })
   
-  # Normal volcano plot
+  ####----Normal volcano plot----####
   output$standardvolcanoplot <- renderPlot({
     req(analysisResults())
     
@@ -3130,7 +3182,7 @@ server <- function(input, output, session) {
     }
   )
   
-  #---GAGE---#
+  ####----GAGE----####
   
   gageSpeciesCode <- reactive({
     org <- isolate(input$organism)
@@ -3395,7 +3447,7 @@ server <- function(input, output, session) {
   )
   
   # ============================================================
-  # BOXPLOT TAB – server logic
+  ####----BOXPLOT TAB – server logic----####
   # ============================================================
   
   # Populate the gene selectize input and group selector when analysis completes
@@ -3551,7 +3603,7 @@ server <- function(input, output, session) {
   )
   
   # ============================================================
-  # COMPARE CONTRASTS – server logic
+  ####----COMPARE CONTRASTS – server logic----####
   # ============================================================
   
   # --- Reactive stores ---
@@ -5213,7 +5265,7 @@ server <- function(input, output, session) {
   )
   
   # ============================================================
-  # END Compare Contrasts
+  ####----END Compare Contrasts----####
   # ============================================================
   
   output$analysisReady <- reactive({ !is.null(analysisResults()) })
