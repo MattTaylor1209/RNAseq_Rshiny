@@ -229,7 +229,7 @@ ui <- fluidPage(
                               selected = "upload", inline = TRUE),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'upload'",
-                   fileInput("sampleInfoFile", "Upload SampleInfo file", accept = c(".txt", ".tsv", ".csv"))
+                   fileInput("sampleInfoFile", "Upload SampleInfo file", accept = c(".txt", ".tsv", ".csv", ".xlsx", ".xls"))
                  ),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'manual'",
@@ -1463,29 +1463,47 @@ server <- function(input, output, session) {
       req(input$sampleInfoFile)
       
       path <- input$sampleInfoFile$datapath
+      ext  <- tolower(tools::file_ext(input$sampleInfoFile$name))
       
-      # Try to read the file, catching malformed input
+      # Read based on file extension
       si <- tryCatch({
-        read.delim(path, stringsAsFactors = TRUE)
+        if (ext %in% c("xlsx", "xls")) {
+          # Excel file
+          as.data.frame(readxl::read_excel(path), stringsAsFactors = FALSE)
+        } else if (ext == "csv") {
+          # Comma-separated
+          read_csv(path, col_names = TRUE, skip_empty_rows = TRUE)
+        } else {
+          # .txt / .tsv — try tab-delimited first
+          tmp <- read.delim(path, stringsAsFactors = TRUE, check.names = FALSE)
+          # If only 1 column, the file was probably comma-separated despite .txt extension
+          if (ncol(tmp) < 2) {
+            tmp <- read_csv(path, col_names = TRUE, skip_empty_rows = TRUE)
+          }
+          tmp
+        }
       }, error = function(e) {
-        # Fall back: try comma-separated in case user uploaded .csv-style
-        tryCatch({
-          read.csv(path, stringsAsFactors = TRUE)
-        }, error = function(e2) {
-          showNotification(
-            paste("Could not read sample info file:", e$message,
-                  "\nExpected a tab- or comma-delimited file with a header row."),
-            type = "error", duration = NULL
-          )
-          NULL
-        })
+        showNotification(
+          paste("Could not read sample info file:", e$message,
+                "\nExpected a tab/comma-delimited or Excel file with a header row."),
+          type = "error", duration = NULL
+        )
+        NULL
       })
+      
+      # For Excel imports, convert character columns to factors to match read.delim behaviour
+      if (ext %in% c("xlsx", "xls") && !is.null(si)) {
+        for (col in names(si)) {
+          if (is.character(si[[col]])) si[[col]] <- factor(si[[col]])
+        }
+      }
       
       validate(need(!is.null(si), "Sample info file could not be parsed. Check the format."))
       validate(need(ncol(si) >= 2,
                     paste0("Sample info has only ", ncol(si), " column(s). ",
                            "Expected at least 2 (e.g. SampleName, Group). ",
-                           "Check the delimiter — the file should be tab-separated.")))
+                           "Check the delimiter — the file should be tab-separated, ",
+                           "comma-separated (.csv), or an Excel file (.xlsx/.xls).")))
       validate(need("SampleName" %in% colnames(si),
                     paste0("Column 'SampleName' not found. Found columns: ",
                            paste(colnames(si), collapse = ", "),
