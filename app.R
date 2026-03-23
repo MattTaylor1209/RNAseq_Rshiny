@@ -2126,7 +2126,10 @@ server <- function(input, output, session) {
         res_df$svalue <- svals[rownames(res_df)]
       }
     }
-    datatable(res_df)
+    datatable(res_df, 
+              colnames = c("Gene ID" = 1), 
+              caption = 'Table of DEGs for the selected contrast',
+              class = 'display')
   })
   
   
