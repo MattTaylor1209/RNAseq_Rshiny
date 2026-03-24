@@ -197,7 +197,7 @@ options(shiny.maxRequestSize = 50 * 1024^2)  # 50 MB
 
 ui <- fluidPage(
   titlePanel("RNA-seq Analysis"),
-  
+  #### ---- Sidebar panel UI ---- ####
   sidebarLayout(
     sidebarPanel(width = 3,
                  selectInput("organism", "Select organism:",
@@ -288,7 +288,7 @@ ui <- fluidPage(
                  )
                  
     ),
-    
+    #### ---- Main Panel UI ---- ####
     mainPanel(
       conditionalPanel(
         condition = "output.inputsReady",
@@ -296,7 +296,8 @@ ui <- fluidPage(
           tabPanel("Input Preview", 
                    tableOutput("previewTable"),
                    h4("Log"),
-                   verbatimTextOutput("log", )),
+                   verbatimTextOutput("log", ),
+                   actionButton("clearlogbtn", "Clear log")),
           tabPanel("Sample Info", tableOutput("sampleInfo")),
           tabPanel("PCA",
                    fluidRow(
@@ -417,10 +418,16 @@ ui <- fluidPage(
                      column(4,
                             actionButton("runGO", "Run GO"),
                             selectInput("GOontology", "Ontology", c("BP","MF","CC"), selected = "BP"),
-                            numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1)
+                            numericInput("GOnumber", "No. of categories to show", value = 10, min = 1, step = 1),
+                            selectInput("GOdirection", "Direction",
+                                        choices = c("Both (combined)" = "both",
+                                                    "Upregulated only" = "up",
+                                                    "Downregulated only" = "down",
+                                                    "Split (Up vs Down)" = "split"),
+                                        selected = "both")
                      ),
                      column(8,
-                            plotOutput("GOBarplot"),
+                            uiOutput("GOBarplotUI"),
                             DT::dataTableOutput("goTable"),
                             downloadButton("dl_go", "Download GO table")
                      )
@@ -892,6 +899,12 @@ ui <- fluidPage(
                             h5("GO analysis"),
                             selectInput("cmpGOont", "Ontology", c("BP","MF","CC"), selected = "BP"),
                             numericInput("cmpGOnum", "Categories to show", value = 10, min = 1, step = 1),
+                            selectInput("cmpGOdirection", "Direction",
+                                        choices = c("Both (combined)" = "both",
+                                                    "Upregulated only" = "up",
+                                                    "Downregulated only" = "down",
+                                                    "Split (Up vs Down)" = "split"),
+                                        selected = "both"),
                             actionButton("runCmpGOBtn", "Run GO", icon = icon("dna")),
                             hr(),
                             h5("GSEA"),
@@ -946,7 +959,7 @@ ui <- fluidPage(
                      column(9,
                             tabsetPanel(id = "cmpDownstreamTabs",
                                         tabPanel("GO Barplot",
-                                                 plotOutput("cmpGOplot", height = "450px"),
+                                                 uiOutput("cmpGOplotUI"),
                                                  DT::dataTableOutput("cmpGOtable"),
                                                  downloadButton("dl_cmp_go", "Download GO table")
                                         ),
@@ -1003,6 +1016,10 @@ server <- function(input, output, session) {
     # Trigger UI update
     logText(logText())
   }
+  
+  observeEvent(input$clearlogbtn, {
+    logText("")
+  })
   
   output$log <- renderText({
     logText()
@@ -2458,12 +2475,12 @@ server <- function(input, output, session) {
       # First, ensure we have a clean data frame with no length mismatches
       res_clean <- ba$res_entrez[complete.cases(ba$res_entrez[c("padj", "log2FoldChange", "ENTREZID")]), ]
       
-      # Now apply your filters on the cleaned data
-      sig_genes <- res_clean[which(res_clean$padj < isolate(input$padjThreshold) &
-                                     abs(res_clean$log2FoldChange) >= isolate(input$lfcThreshold)), ]
+      # Direction choice
+      direction <- isolate(input$GOdirection)
+      padj_thr  <- isolate(input$padjThreshold)
+      lfc_thr   <- isolate(input$lfcThreshold)
       
       # Extract vectors
-      entrez_id_vector <- sig_genes$ENTREZID
       universe_entrez_ids <- res_clean$ENTREZID
       
       # Fix gene lengths
@@ -2484,44 +2501,129 @@ server <- function(input, output, session) {
       # Read species code 
       sp <- isolate(goSpeciesCode())
       
-      # Run GO enrichment analysis with goana
-      go_results <- limma::goana(de = entrez_id_vector, species = sp, 
-                                 universe = universe_entrez_ids, 
-                                 covariate = covariate_arg)
+      # Helper to run goana on a gene set
+      run_goana <- function(entrez_ids, label) {
+        validate(need(length(entrez_ids) >= 2,
+                      paste0("Fewer than 2 ", label, " genes with Entrez IDs; cannot run GO.")))
+        limma::goana(de = entrez_ids, species = sp,
+                     universe = universe_entrez_ids,
+                     covariate = covariate_arg)
+      }
+      
+      if (direction == "split") {
+        # Run separately on up and down genes
+        sig_up   <- res_clean[which(res_clean$padj < padj_thr &
+                                      res_clean$log2FoldChange >= lfc_thr), ]
+        sig_down <- res_clean[which(res_clean$padj < padj_thr &
+                                      res_clean$log2FoldChange <= -lfc_thr), ]
+        
+        go_up   <- run_goana(sig_up$ENTREZID, "upregulated")
+        go_down <- run_goana(sig_down$ENTREZID, "downregulated")
+        
+        appendLog(sprintf("GO split: %d up genes, %d down genes.",
+                          nrow(sig_up), nrow(sig_down)))
+        
+        result <- list(go_up = go_up, go_down = go_down, direction = "split")
+      } else {
+        # Filter by chosen direction
+        if (direction == "up") {
+          sig_genes <- res_clean[which(res_clean$padj < padj_thr &
+                                         res_clean$log2FoldChange >= lfc_thr), ]
+        } else if (direction == "down") {
+          sig_genes <- res_clean[which(res_clean$padj < padj_thr &
+                                         res_clean$log2FoldChange <= -lfc_thr), ]
+        } else {
+          sig_genes <- res_clean[which(res_clean$padj < padj_thr &
+                                         abs(res_clean$log2FoldChange) >= lfc_thr), ]
+        }
+        
+        go_results <- run_goana(sig_genes$ENTREZID, direction)
+        result <- list(go_results = go_results, direction = direction)
+      }
       
       incProgress(0.8)
       appendLog("GO analysis complete.")
       showNotification("GO analysis complete.", type="message")
       
-      list(go_results = go_results)
+      result
     })
+  })
+  
+  output$GOBarplotUI <- renderUI({
+    go_data <- goResults()
+    h <- if (!is.null(go_data) && go_data$direction == "split") "900px" else "500px"
+    plotOutput("GOBarplot", height = h)
   })
   
   output$GOBarplot <- renderPlot({
     req(goResults(), input$GOontology)
+    go_data <- goResults()
     
-    go_results <- goResults()$go_results
-    topgo <- limma::topGO(
-      go_results,
-      ontology = input$GOontology,
-      number   = input$GOnumber
-    )
-    
-    ggplot(data = topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
-      geom_bar(stat = "identity") +
-      coord_flip() +
-      theme_minimal(base_size = 13) +
-      labs(x = "GO Terms", y = "-log10(p-value)", title = paste("Top GO Terms", 
-                                                                isolate(input$GOontology), sep = ": ")
-      )
+    if (go_data$direction == "split") {
+      # Get top GO for up and down separately
+      topgo_up   <- limma::topGO(go_data$go_up,   ontology = input$GOontology, number = input$GOnumber)
+      topgo_down <- limma::topGO(go_data$go_down, ontology = input$GOontology, number = input$GOnumber)
+      
+      topgo_up$Direction   <- "Upregulated"
+      topgo_down$Direction <- "Downregulated"
+      topgo_up$Term_id     <- rownames(topgo_up)
+      topgo_down$Term_id   <- rownames(topgo_down)
+      
+      combined <- rbind(topgo_up, topgo_down)
+      combined$Direction <- factor(combined$Direction, levels = c("Upregulated", "Downregulated"))
+      
+      ggplot(combined, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE), fill = Direction)) +
+        geom_bar(stat = "identity") +
+        coord_flip() +
+        facet_wrap(~ Direction, ncol = 1, scales = "free_y") +
+        scale_fill_manual(values = c("Upregulated" = "#d73027", "Downregulated" = "#4575b4")) +
+        theme_minimal(base_size = 13) +
+        theme(legend.position = "none",
+              strip.text = element_text(face = "bold", size = 13)) +
+        labs(x = "GO Terms", y = "-log10(p-value)",
+             title = paste("Top GO Terms (split by direction):", input$GOontology))
+    } else {
+      go_results <- go_data$go_results
+      topgo <- limma::topGO(go_results, ontology = input$GOontology, number = input$GOnumber)
+      
+      dir_label <- switch(go_data$direction,
+                          "up"   = " (Upregulated)",
+                          "down" = " (Downregulated)",
+                          "")
+      bar_fill <- switch(go_data$direction,
+                         "up"   = "#d73027",
+                         "down" = "#4575b4",
+                         "grey30")
+      
+      ggplot(data = topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
+        geom_bar(stat = "identity", fill = bar_fill) +
+        coord_flip() +
+        theme_minimal(base_size = 13) +
+        labs(x = "GO Terms", y = "-log10(p-value)",
+             title = paste0("Top GO Terms: ", input$GOontology, dir_label))
+    }
   })
   
   output$goTable <- DT::renderDataTable({
     req(goResults(), input$GOontology)
-    go_results <- goResults()$go_results
-    topgo <- limma::topGO(go_results, ontology = input$GOontology, number = Inf)
-    topgo$GOID <- rownames(topgo)
-    topgo <- topgo[, c("GOID", setdiff(names(topgo), "GOID"))]
+    go_data <- goResults()
+    
+    if (go_data$direction == "split") {
+      topgo_up   <- limma::topGO(go_data$go_up,   ontology = input$GOontology, number = Inf)
+      topgo_down <- limma::topGO(go_data$go_down, ontology = input$GOontology, number = Inf)
+      topgo_up$GOID       <- rownames(topgo_up)
+      topgo_down$GOID     <- rownames(topgo_down)
+      topgo_up$Direction   <- "Upregulated"
+      topgo_down$Direction <- "Downregulated"
+      topgo <- rbind(topgo_up, topgo_down)
+      topgo <- topgo[, c("GOID", "Direction", setdiff(names(topgo), c("GOID", "Direction")))]
+    } else {
+      go_results <- go_data$go_results
+      topgo <- limma::topGO(go_results, ontology = input$GOontology, number = Inf)
+      topgo$GOID <- rownames(topgo)
+      topgo <- topgo[, c("GOID", setdiff(names(topgo), "GOID"))]
+    }
+    
     DT::datatable(topgo, options = list(pageLength = 10, scrollX = TRUE),
                   rownames = FALSE)
   })
@@ -2529,9 +2631,22 @@ server <- function(input, output, session) {
   output$dl_go <- downloadHandler(
     filename = function() paste0("GO_", input$GOontology, "_results.csv"),
     content  = function(f) {
-      go_results <- goResults()$go_results
-      topgo <- limma::topGO(go_results, ontology = input$GOontology, number = Inf)
-      topgo$GOID <- rownames(topgo)
+      go_data <- goResults()
+      
+      if (go_data$direction == "split") {
+        topgo_up   <- limma::topGO(go_data$go_up,   ontology = input$GOontology, number = Inf)
+        topgo_down <- limma::topGO(go_data$go_down, ontology = input$GOontology, number = Inf)
+        topgo_up$GOID       <- rownames(topgo_up)
+        topgo_down$GOID     <- rownames(topgo_down)
+        topgo_up$Direction   <- "Upregulated"
+        topgo_down$Direction <- "Downregulated"
+        topgo <- rbind(topgo_up, topgo_down)
+      } else {
+        go_results <- go_data$go_results
+        topgo <- limma::topGO(go_results, ontology = input$GOontology, number = Inf)
+        topgo$GOID <- rownames(topgo)
+      }
+      
       readr::write_csv(topgo, f)
     }
   )
@@ -2549,7 +2664,14 @@ server <- function(input, output, session) {
     
     if (src == "go") {
       req(goResults())
-      go_df <- goResults()$go_results
+      go_data <- goResults()
+      # Combine results if split mode; otherwise use single result
+      if (go_data$direction == "split") {
+        go_df <- rbind(go_data$go_up, go_data$go_down)
+        go_df <- go_df[!duplicated(rownames(go_df)), ]
+      } else {
+        go_df <- go_data$go_results
+      }
       # Show top terms across all ontologies, ordered by P.DE
       go_df <- go_df[order(go_df$P.DE), ]
       term_choices <- setNames(rownames(go_df),
@@ -2611,7 +2733,13 @@ server <- function(input, output, session) {
           gene_symbols <- unique(matched$GeneIDs)
           
           # Store the term label
-          go_df <- goResults()$go_results
+          go_data <- goResults()
+          if (go_data$direction == "split") {
+            go_df <- rbind(go_data$go_up, go_data$go_down)
+            go_df <- go_df[!duplicated(rownames(go_df)), ]
+          } else {
+            go_df <- go_data$go_results
+          }
           if (term_id %in% rownames(go_df)) {
             exploreTermLabel(paste0(term_id, ": ", go_df[term_id, "Term"]))
           } else {
@@ -4555,6 +4683,7 @@ server <- function(input, output, session) {
     withProgress(message = "Running GO on selected gene set...", value = 0, {
       info <- get_entrez_for_set(dsSetChoice())
       sp   <- isolate(goSpeciesCode())
+      direction <- isolate(input$cmpGOdirection)
       
       universe_entrez <- analysisResults()$res_entrez$ENTREZID
       gene_lengths_vec <- as.numeric(analysisResults()$res_entrez$gene_lengths)
@@ -4569,30 +4698,103 @@ server <- function(input, output, session) {
                          type = "warning", duration = 6)
       }
       
-      validate(need(length(info$entrez) >= 2, "Fewer than 2 genes with Entrez IDs; cannot run GO."))
+      # Use the res_entrez_subset which has LFC info for direction splitting
+      sub_res <- info$res_entrez_subset
       
-      go_res <- limma::goana(de = info$entrez, species = sp,
-                             universe = universe_entrez,
-                             covariate = covariate_arg)
+      # Helper to run goana
+      run_cmp_goana <- function(entrez_ids, label) {
+        validate(need(length(entrez_ids) >= 2,
+                      paste0("Fewer than 2 ", label, " genes with Entrez IDs; cannot run GO.")))
+        limma::goana(de = entrez_ids, species = sp,
+                     universe = universe_entrez,
+                     covariate = covariate_arg)
+      }
+      
+      if (direction == "split") {
+        up_entrez   <- sub_res$ENTREZID[sub_res$log2FoldChange > 0]
+        down_entrez <- sub_res$ENTREZID[sub_res$log2FoldChange < 0]
+        go_up   <- run_cmp_goana(up_entrez,   "upregulated")
+        go_down <- run_cmp_goana(down_entrez, "downregulated")
+        cmp_go_data <- list(go_up = go_up, go_down = go_down, direction = "split")
+      } else if (direction == "up") {
+        up_entrez <- sub_res$ENTREZID[sub_res$log2FoldChange > 0]
+        go_res <- run_cmp_goana(up_entrez, "upregulated")
+        cmp_go_data <- list(go_results = go_res, direction = "up")
+      } else if (direction == "down") {
+        down_entrez <- sub_res$ENTREZID[sub_res$log2FoldChange < 0]
+        go_res <- run_cmp_goana(down_entrez, "downregulated")
+        cmp_go_data <- list(go_results = go_res, direction = "down")
+      } else {
+        go_res <- run_cmp_goana(info$entrez, "all")
+        cmp_go_data <- list(go_results = go_res, direction = "both")
+      }
+      
       incProgress(0.9)
       
+      output$cmpGOplotUI <- renderUI({
+        h <- if (cmp_go_data$direction == "split") "900px" else "450px"
+        plotOutput("cmpGOplot", height = h)
+      })
+      
       output$cmpGOplot <- renderPlot({
-        topgo <- limma::topGO(go_res, ontology = input$cmpGOont, number = input$cmpGOnum)
-        ggplot(topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
-          geom_bar(stat = "identity", fill = "#638475") +
-          coord_flip() + theme_minimal() +
-          labs(x = "GO Term", y = "-log10(p-value)",
-               title = paste("GO", input$cmpGOont, "–", dsSetChoice()))
+        if (cmp_go_data$direction == "split") {
+          topgo_up   <- limma::topGO(cmp_go_data$go_up,   ontology = input$cmpGOont, number = input$cmpGOnum)
+          topgo_down <- limma::topGO(cmp_go_data$go_down, ontology = input$cmpGOont, number = input$cmpGOnum)
+          topgo_up$Direction   <- "Upregulated"
+          topgo_down$Direction <- "Downregulated"
+          combined <- rbind(topgo_up, topgo_down)
+          combined$Direction <- factor(combined$Direction, levels = c("Upregulated", "Downregulated"))
+          
+          ggplot(combined, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE), fill = Direction)) +
+            geom_bar(stat = "identity") +
+            coord_flip() +
+            facet_wrap(~ Direction, ncol = 1, scales = "free_y") +
+            scale_fill_manual(values = c("Upregulated" = "#d73027", "Downregulated" = "#4575b4")) +
+            theme_minimal(base_size = 13) +
+            theme(legend.position = "none",
+                  strip.text = element_text(face = "bold", size = 13)) +
+            labs(x = "GO Term", y = "-log10(p-value)",
+                 title = paste("GO", input$cmpGOont, "(split) –", dsSetChoice()))
+        } else {
+          topgo <- limma::topGO(cmp_go_data$go_results, ontology = input$cmpGOont, number = input$cmpGOnum)
+          dir_label <- switch(cmp_go_data$direction, "up" = " (Up)", "down" = " (Down)", "")
+          bar_fill  <- switch(cmp_go_data$direction, "up" = "#d73027", "down" = "#4575b4", "#638475")
+          
+          ggplot(topgo, aes(x = reorder(Term, -log10(P.DE)), y = -log10(P.DE))) +
+            geom_bar(stat = "identity", fill = bar_fill) +
+            coord_flip() + theme_minimal(base_size = 13) +
+            labs(x = "GO Term", y = "-log10(p-value)",
+                 title = paste0("GO ", input$cmpGOont, dir_label, " – ", dsSetChoice()))
+        }
       })
       
       output$cmpGOtable <- DT::renderDataTable({
-        topgo <- limma::topGO(go_res, ontology = input$cmpGOont, number = Inf)
-        DT::datatable(topgo, options = list(pageLength = 10))
+        if (cmp_go_data$direction == "split") {
+          topgo_up   <- limma::topGO(cmp_go_data$go_up,   ontology = input$cmpGOont, number = Inf)
+          topgo_down <- limma::topGO(cmp_go_data$go_down, ontology = input$cmpGOont, number = Inf)
+          topgo_up$Direction   <- "Upregulated"
+          topgo_down$Direction <- "Downregulated"
+          topgo <- rbind(topgo_up, topgo_down)
+        } else {
+          topgo <- limma::topGO(cmp_go_data$go_results, ontology = input$cmpGOont, number = Inf)
+        }
+        DT::datatable(topgo, options = list(pageLength = 10, scrollX = TRUE))
       })
       
       output$dl_cmp_go <- downloadHandler(
         filename = function() paste0("cmp_GO_", Sys.Date(), ".csv"),
-        content  = function(f) readr::write_csv(as.data.frame(go_res), f)
+        content  = function(f) {
+          if (cmp_go_data$direction == "split") {
+            topgo_up   <- limma::topGO(cmp_go_data$go_up,   ontology = input$cmpGOont, number = Inf)
+            topgo_down <- limma::topGO(cmp_go_data$go_down, ontology = input$cmpGOont, number = Inf)
+            topgo_up$Direction   <- "Upregulated"
+            topgo_down$Direction <- "Downregulated"
+            topgo <- rbind(topgo_up, topgo_down)
+          } else {
+            topgo <- as.data.frame(cmp_go_data$go_results)
+          }
+          readr::write_csv(topgo, f)
+        }
       )
       showNotification("GO complete.", type = "message")
     })
