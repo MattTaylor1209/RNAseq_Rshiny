@@ -2994,7 +2994,7 @@ server <- function(input, output, session) {
       colors = volcano_colors,
       key = ~Gene,
       source = "volcano",
-      marker = list(size = 6)
+      marker = list(size = 4)
     )
     
     p <- plotly::event_register(p, "plotly_click")
