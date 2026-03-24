@@ -1017,6 +1017,7 @@ server <- function(input, output, session) {
     logText(logText())
   }
   
+  # Clear the log
   observeEvent(input$clearlogbtn, {
     logText("")
   })
