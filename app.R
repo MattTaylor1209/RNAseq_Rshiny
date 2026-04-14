@@ -300,6 +300,10 @@ ui <- fluidPage(
           tabPanel("Sample Info", tableOutput("sampleInfo")),
           tabPanel("PCA",
                    fluidRow(
+                     column(2, selectInput("pcaXaxis", "X axis:", choices = paste0("PC", 1:10), selected = "PC1")),
+                     column(2, selectInput("pcaYaxis", "Y axis:", choices = paste0("PC", 1:10), selected = "PC2"))
+                   ),
+                   fluidRow(
                      column(2,
                             sliderInput("pointsize", "Point size", min = 0, max = 20, step = 0.5, 
                                         value = 10)
@@ -326,6 +330,12 @@ ui <- fluidPage(
                      )),
                    fluidRow(
                      plotOutput("pcaPlot")
+                   ),
+                   fluidRow(
+                     column(12,
+                            h4("Scree / Elbow Plot"),
+                            plotOutput("elbowPlot", height = "300px")
+                     )
                    ),
                    conditionalPanel(
                      condition = "output.analysisReady",
@@ -1971,20 +1981,36 @@ server <- function(input, output, session) {
   
   
   # PCA plot
+  # Update PC axis selectors based on available PCs
+  observeEvent(analysisResults(), {
+    req(analysisResults())
+    pca_df <- analysisResults()$pca_df
+    pc_cols <- grep("^PC\\d+$", names(pca_df), value = TRUE)
+    updateSelectInput(session, "pcaXaxis", choices = pc_cols, selected = "PC1")
+    updateSelectInput(session, "pcaYaxis", choices = pc_cols, selected = "PC2")
+  })
+  
   output$pcaPlot <- renderPlot({
     req(analysisResults())
-    # Recall the variables from the reactive analysisResults event
     pca_df <- analysisResults()$pca_df
     percentVar <- analysisResults()$percentVar
+    
+    pc_x <- input$pcaXaxis
+    pc_y <- input$pcaYaxis
+    req(pc_x %in% names(pca_df), pc_y %in% names(pca_df))
+    
+    # Extract PC indices for labelling
+    pc_x_idx <- as.integer(sub("PC", "", pc_x))
+    pc_y_idx <- as.integer(sub("PC", "", pc_y))
     
     n_grps <- length(unique(pca_df$Group))
     shape_vals <- rep(21:25, length.out = n_grps)
     
-    ggplot(pca_df, aes(x = PC1, y = PC2, fill = Group, shape = Group)) +
+    ggplot(pca_df, aes(x = .data[[pc_x]], y = .data[[pc_y]], fill = Group, shape = Group)) +
       geom_point(size = input$pointsize) +
       geom_text_repel(aes(label = SampleName), size = input$labelsize,
-                      box.padding = 1,      # Increases space around labels
-                      point.padding = 1,    # Increases distance from points
+                      box.padding = 1,
+                      point.padding = 1,
                       min.segment.length = 0,
                       segment.size = if (input$labelsize == 0) 0 else 0.5) +
       scale_shape_manual(values = shape_vals) +
@@ -1998,8 +2024,34 @@ server <- function(input, output, session) {
       )+
       labs(
         title = "PCA Plot of RNA-seq Samples",
-        x = paste0("PC1 (", percentVar[1], "% variance)"),
-        y = paste0("PC2 (", percentVar[2], "% variance)")
+        x = paste0(pc_x, " (", percentVar[pc_x_idx], "% variance)"),
+        y = paste0(pc_y, " (", percentVar[pc_y_idx], "% variance)")
+      )
+  })
+  
+  # Elbow / Scree plot
+  output$elbowPlot <- renderPlot({
+    req(analysisResults())
+    percentVar <- analysisResults()$percentVar
+    
+    n_pcs <- length(percentVar)
+    elbow_df <- data.frame(
+      PC = factor(paste0("PC", seq_len(n_pcs)), levels = paste0("PC", seq_len(n_pcs))),
+      PercentVariance = percentVar
+    )
+    
+    ggplot(elbow_df, aes(x = PC, y = PercentVariance, group = 1)) +
+      geom_line(colour = "#2166ac", linewidth = 0.8) +
+      geom_point(size = 3, colour = "#2166ac") +
+      theme_minimal(base_size = 13) +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title = element_text(face = "bold")
+      ) +
+      labs(
+        title = "Scree Plot",
+        x = "Principal Component",
+        y = "% Variance Explained"
       )
   })
   
@@ -5495,6 +5547,7 @@ server <- function(input, output, session) {
   outputOptions(output, "analysisReady", suspendWhenHidden = FALSE)
   outputOptions(output, "heatmapPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "pcaPlot", suspendWhenHidden = FALSE)
+  outputOptions(output, "elbowPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "volcanoPlot", suspendWhenHidden = FALSE)
   outputOptions(output, "deTable", suspendWhenHidden = FALSE)
   outputOptions(output, "geneBoxplot", suspendWhenHidden = TRUE)
