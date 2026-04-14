@@ -1711,6 +1711,13 @@ server <- function(input, output, session) {
       showNotification("Running DESeq2 analysis...", type="message")
       incProgress(0.1)
       
+      # Remove any genes with NA counts
+      na_rows <- rowSums(is.na(counts)) > 0
+      if (any(na_rows)) {
+        appendLog(paste("Removing", sum(na_rows), "genes with NA counts."))
+        counts <- counts[!na_rows, ]
+      }
+      
       
       # Create DESEq2 data set
       appendLog("Creating DESeqDataSet...")
@@ -1749,6 +1756,7 @@ server <- function(input, output, session) {
         n_dropped <- sum(!keep_idx)
         dds <- dds[keep_idx, ]
         rownames(dds) <- gene_symbols[keep_idx]
+        
         
         # Handle any duplicates introduced by the symbol mapping
         if (anyDuplicated(rownames(dds))) {
