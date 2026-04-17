@@ -844,6 +844,7 @@ ui <- fluidPage(
                             numericInput("ixnLFC", "LFC threshold",
                                          value = 0, min = 0, step = 0.1),
                             sliderInput("ixnVolcTop", "Top genes to label", 1, 80, 20, step = 1),
+                            checkboxInput("ixnVolcUseShrunk", "Use shrunken log2FC on x-axis?", value = FALSE),
                             actionButton("runIxnBtn", "Run Contrast Test",
                                          icon = icon("not-equal")),
                             br(), br(),
@@ -2877,8 +2878,13 @@ server <- function(input, output, session) {
       return()
     }
     
-    # Build output table
-    out_df <- res_df[gene_symbols, c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj"), drop = FALSE]
+    # Build output table — select only columns that actually exist in res_df
+    # (stat is dropped by ashr shrinkage; shrunkLFC only exists when shrinkage was applied).
+    want_cols <- intersect(
+      c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj", "shrunkLFC"),
+      names(res_df)
+    )
+    out_df <- res_df[gene_symbols, want_cols, drop = FALSE]
     out_df$GeneSymbol <- rownames(out_df)
     out_df <- out_df[, c("GeneSymbol", setdiff(names(out_df), "GeneSymbol"))]
     out_df <- out_df[order(out_df$padj), ]
@@ -4641,13 +4647,16 @@ server <- function(input, output, session) {
       all_genes  <- ixn_df$GeneID
       all_mapped <- clusterProfiler::bitr(all_genes, fromType = from_type, toType = "ENTREZID", OrgDb = orgdb)
       
+      # Build the stats table defensively — columns vary with shrinkage settings
+      # (stat is dropped by ashr; shrunkLFC is only present when shrinkage was applied).
       all_stats_df <- data.frame(
         GeneIDs        = ixn_df$GeneID,
         log2FoldChange = ixn_df$log2FoldChange,
-        stat           = ixn_df$stat,
-        padj           = ixn_df$padj,
         stringsAsFactors = FALSE
       )
+      for (col in c("stat", "pvalue", "padj", "shrunkLFC")) {
+        if (col %in% names(ixn_df)) all_stats_df[[col]] <- ixn_df[[col]]
+      }
       rownames(all_stats_df) <- all_stats_df$GeneIDs
       
       res_entrez_subset <- merge(all_stats_df, all_mapped, by.x = "GeneIDs", by.y = from_type, all.x = FALSE)
@@ -4877,9 +4886,15 @@ server <- function(input, output, session) {
                     "Not enough genes in this set for GSEA."))
       
       metric_col <- input$cmpGseaMetric
-      if (metric_col == "shrunkLFC" && !"shrunkLFC" %in% names(sub_res)) {
-        showNotification("Shrunken LFCs not available for this gene set. Enable 'Apply LFC shrinkage' and re-run.",
-                         type = "error", duration = 8)
+      if (!metric_col %in% names(sub_res)) {
+        msg <- if (metric_col == "shrunkLFC") {
+          "Shrunken LFCs not available for this gene set. Enable 'Apply LFC shrinkage' and re-run."
+        } else if (metric_col == "stat") {
+          "Wald 'stat' is not available for this gene set (it's dropped by ashr shrinkage). Pick 'log2FoldChange' or 'shrunkLFC'."
+        } else {
+          paste0("Ranking metric '", metric_col, "' is not available for this gene set.")
+        }
+        showNotification(msg, type = "error", duration = 8)
         return()
       }
       m <- sub_res[[metric_col]]
@@ -5020,9 +5035,15 @@ server <- function(input, output, session) {
       
       sub_res    <- info$res_entrez_subset
       metric_col <- input$cmpGageMetric
-      if (metric_col == "shrunkLFC" && !"shrunkLFC" %in% names(sub_res)) {
-        showNotification("Shrunken LFCs not available for this gene set. Enable 'Apply LFC shrinkage' and re-run.",
-                         type = "error", duration = 8)
+      if (!metric_col %in% names(sub_res)) {
+        msg <- if (metric_col == "shrunkLFC") {
+          "Shrunken LFCs not available for this gene set. Enable 'Apply LFC shrinkage' and re-run."
+        } else if (metric_col == "stat") {
+          "Wald 'stat' is not available for this gene set (it's dropped by ashr shrinkage). Pick 'log2FoldChange' or 'shrunkLFC'."
+        } else {
+          paste0("Ranking metric '", metric_col, "' is not available for this gene set.")
+        }
+        showNotification(msg, type = "error", duration = 8)
         return()
       }
       fc_vec     <- sub_res[[metric_col]]
@@ -5374,6 +5395,10 @@ server <- function(input, output, session) {
       
       if (is.null(res)) return()
       
+      # Keep `res` unshrunken; store shrunken version alongside as `res_shrunk`.
+      # This mirrors the main DE tab, preserves `stat` for downstream GSEA, and
+      # lets users see both the MLE and the posterior estimate.
+      res_shrunk <- NULL
       if (isTRUE(isolate(input$applyLfcShrink))) {
         shrink_method <- isolate(input$shrinkMethod)
         
@@ -5390,14 +5415,13 @@ server <- function(input, output, session) {
         
         appendLog(paste0("Applying LFC shrinkage (method: ", shrink_method, ")..."))
         
-        shrunk_res <- tryCatch({
+        res_shrunk <- tryCatch({
           lfcShrink(
             dds,
             contrast = contrast_vec,   # the SAME vector used for results() above
             type     = shrink_method,
             res      = res
-            # Deliberately NOT setting svalue = TRUE — we need padj preserved
-            # for downstream ordering, filtering, and the volcano plot.
+            # Deliberately NOT setting svalue = TRUE — we need padj preserved.
             # Deliberately NOT re-passing lfcThreshold — already applied by results().
           )
         }, error = function(e) {
@@ -5407,31 +5431,43 @@ server <- function(input, output, session) {
           NULL
         })
         
-        # Only overwrite res on success — otherwise keep the unshrunken version
-        if (!is.null(shrunk_res)) {
-          res <- shrunk_res
+        if (!is.null(res_shrunk)) {
           appendLog("LFC shrinkage applied successfully.")
         } else {
-          appendLog("Keeping unshrunken LFCs.")
+          appendLog("Proceeding with unshrunken LFCs only.")
         }
       }
       
       incProgress(0.6)
       
+      # Build the output from the UNSHRUNKEN results — preserves stat / pvalue / padj.
       res_df <- as.data.frame(res)
       res_df$GeneID <- rownames(res_df)
       res_df <- res_df[!is.na(res_df$padj), ]
+      
+      # Add shrunken LFC columns when available (mirrors main DE tab pattern).
+      # `res_shrunk$log2FoldChange` returns an UNNAMED vector — we have to
+      # reattach rownames before doing the character-index lookup, otherwise
+      # the resulting column comes out all NA.
+      if (!is.null(res_shrunk)) {
+        shrunk_lfc   <- setNames(res_shrunk$log2FoldChange, rownames(res_shrunk))
+        shrunk_lfcSE <- setNames(res_shrunk$lfcSE,          rownames(res_shrunk))
+        res_df$shrunkLFC   <- shrunk_lfc[rownames(res_df)]
+        res_df$shrunkLfcSE <- shrunk_lfcSE[rownames(res_df)]
+      }
       
       # ---- Individual effect LFCs (pairwise mode only) ----
       if (is_pairwise) {
         contrast_eff1 <- all_group_mean_rows[, num1] - all_group_mean_rows[, den1]
         contrast_eff2 <- all_group_mean_rows[, num2] - all_group_mean_rows[, den2]
         
+        # Always compute unshrunken per-effect LFCs
         res_eff1 <- results(dds, contrast = contrast_eff1)
         res_eff2 <- results(dds, contrast = contrast_eff2)
         
-        # Shrink per-effect LFCs so the Pattern classification and any
-        # downstream scatter/plot match the shrunken interaction LFC.
+        # Optionally compute shrunken versions ALONGSIDE (don't overwrite).
+        res_eff1_shrunk <- NULL
+        res_eff2_shrunk <- NULL
         if (isTRUE(isolate(input$applyLfcShrink))) {
           appendLog("Shrinking per-effect LFCs (ashr)...")
           res_eff1_shrunk <- tryCatch(
@@ -5442,18 +5478,28 @@ server <- function(input, output, session) {
             lfcShrink(dds, contrast = contrast_eff2, type = "ashr", res = res_eff2),
             error = function(e) {
               appendLog(paste("Shrink eff2 failed:", e$message)); NULL })
-          if (!is.null(res_eff1_shrunk)) res_eff1 <- res_eff1_shrunk
-          if (!is.null(res_eff2_shrunk)) res_eff2 <- res_eff2_shrunk
         }
         
         eff1_label <- paste0("LFC_", num1, "_vs_", den1)
         eff2_label <- paste0("LFC_", num2, "_vs_", den2)
         
+        # Unshrunken columns — always written
         res_df[[eff1_label]] <- res_eff1[rownames(res_df), "log2FoldChange"]
         res_df[[eff2_label]] <- res_eff2[rownames(res_df), "log2FoldChange"]
         
-        lfc1 <- res_df[[eff1_label]]
-        lfc2 <- res_df[[eff2_label]]
+        # Shrunken companions — only when shrinkage succeeded
+        if (!is.null(res_eff1_shrunk))
+          res_df[[paste0(eff1_label, "_shrunk")]] <-
+          res_eff1_shrunk[rownames(res_df), "log2FoldChange"]
+        if (!is.null(res_eff2_shrunk))
+          res_df[[paste0(eff2_label, "_shrunk")]] <-
+          res_eff2_shrunk[rownames(res_df), "log2FoldChange"]
+        
+        # Use shrunken LFCs for Pattern classification when available — borderline
+        # "opposite direction" calls get pulled toward zero, making Pattern more
+        # conservative and trustworthy.
+        lfc1 <- if (!is.null(res_eff1_shrunk)) res_df[[paste0(eff1_label, "_shrunk")]] else res_df[[eff1_label]]
+        lfc2 <- if (!is.null(res_eff2_shrunk)) res_df[[paste0(eff2_label, "_shrunk")]] else res_df[[eff2_label]]
         res_df$Pattern <- dplyr::case_when(
           lfc1 > 0 & lfc2 > 0  ~ "Both UP (magnitude differs)",
           lfc1 < 0 & lfc2 < 0  ~ "Both DOWN (magnitude differs)",
@@ -5479,16 +5525,21 @@ server <- function(input, output, session) {
           eff_vec <- all_group_mean_rows[, g] - all_group_mean_rows[, ref_group]
           res_eff <- results(dds, contrast = eff_vec)
           
+          # Optionally compute shrunken version ALONGSIDE (don't overwrite).
+          res_eff_shrunk <- NULL
           if (do_shrink) {
-            shrunk <- tryCatch(
+            res_eff_shrunk <- tryCatch(
               lfcShrink(dds, contrast = eff_vec, type = "ashr", res = res_eff),
               error = function(e) {
                 appendLog(paste("Shrink", g, "failed:", e$message)); NULL })
-            if (!is.null(shrunk)) res_eff <- shrunk
           }
           
           col_name <- paste0("LFC_", g, "_vs_", ref_group)
           res_df[[col_name]] <- res_eff[rownames(res_df), "log2FoldChange"]
+          if (!is.null(res_eff_shrunk)) {
+            res_df[[paste0(col_name, "_shrunk")]] <-
+              res_eff_shrunk[rownames(res_df), "log2FoldChange"]
+          }
         }
       }
       
@@ -5542,6 +5593,17 @@ server <- function(input, output, session) {
         values = c("Significant" = "firebrick", "NS" = "grey75"), name = "")
     }
     
+    # Determine which LFC column to plot on the x-axis
+    use_shrunk <- isTRUE(input$ixnVolcUseShrunk) && "shrunkLFC" %in% names(df)
+    if (isTRUE(input$ixnVolcUseShrunk) && !"shrunkLFC" %in% names(df)) {
+      showNotification(
+        "Shrunken LFCs not available — enable 'Apply LFC shrinkage' and re-run the contrast. Showing unshrunken LFC.",
+        type = "warning", duration = 5)
+    }
+    df$plot_lfc <- if (use_shrunk) df$shrunkLFC else df$log2FoldChange
+    x_lab <- if (use_shrunk) expression(Shrunken~log[2]~fold~change~(contrast))
+    else             expression(log[2]~fold~change~(contrast))
+    
     top_genes <- head(df[df$significant == TRUE, ], input$ixnVolcTop)
     
     # Build title depending on mode
@@ -5562,7 +5624,7 @@ server <- function(input, output, session) {
       plot_title <- paste0("Custom contrast: ", paste(parts, collapse = " + "))
     }
     
-    ggplot(df, aes(x = log2FoldChange, y = neg_log10_padj)) +
+    ggplot(df, aes(x = plot_lfc, y = neg_log10_padj)) +
       geom_point(aes(colour = PlotColour), size = 1.5, alpha = 0.6) +
       colour_scale +
       geom_hline(yintercept = -log10(input$ixnPadj),
@@ -5576,7 +5638,7 @@ server <- function(input, output, session) {
         aes(label = GeneID), size = 3, max.overlaps = 20
       ) +
       labs(
-        x     = expression(log[2]~fold~change~(contrast)),
+        x     = x_lab,
         y     = expression(-log[10]~adjusted~italic(p)),
         title = plot_title
       ) +
