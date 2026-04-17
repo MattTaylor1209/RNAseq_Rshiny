@@ -191,6 +191,9 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 
 options(shiny.maxRequestSize = 50 * 1024^2)  # 50 MB
 
+# Set seed for anything which requires random number generation (for reproducibility)
+
+set.seed(123)
 
 #### UI ####
 
