@@ -2485,7 +2485,7 @@ server <- function(input, output, session) {
       need(inherits(gseres, c("gseaResult","enrichResult","compareClusterResult")),
            paste("dotplot() needs a gseaResult/enrichResult. Got:", paste(class(gseres), collapse=", ")))
     )
-    enrichplot::dotplot(gseres, showCategory = input$numcategories)  # <- enrichplot
+    enrichplot::dotplot(gseres, showCategory = input$numcategories, color = "NES")  # <- enrichplot
   })
   
   
@@ -4987,7 +4987,7 @@ server <- function(input, output, session) {
         df_check <- as.data.frame(gse_local)
         validate(need(nrow(df_check) > 0, "No significant GSEA terms found."))
         n_show <- min(input$cmpGseaNum, nrow(df_check))
-        enrichplot::dotplot(gse_local, showCategory = n_show)
+        enrichplot::dotplot(gse_local, showCategory = n_show, color = "NES")
       })
       output$cmpGseaEnrichPlot <- renderPlot({
         gse_local <- cmpGseaRes()
@@ -5642,6 +5642,7 @@ server <- function(input, output, session) {
         data = top_genes,
         aes(label = GeneID), size = 3, max.overlaps = 20
       ) +
+      guides(colour = guide_legend(nrow = 2)) +
       labs(
         x     = x_lab,
         y     = expression(-log[10]~adjusted~italic(p)),
@@ -5717,6 +5718,7 @@ server <- function(input, output, session) {
       geom_point(aes(colour = Pattern), size = 2, alpha = 0.75) +
       scale_colour_manual(values = pattern_colours[present_levels],
                           name = "Pattern", drop = FALSE) +
+      guides(colour = guide_legend(nrow = 2)) + 
       ggrepel::geom_text_repel(
         data = top_genes,
         aes(label = GeneID), size = 3, max.overlaps = 25,
