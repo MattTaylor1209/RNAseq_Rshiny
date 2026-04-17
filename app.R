@@ -857,6 +857,11 @@ ui <- fluidPage(
                             ),
                             plotOutput("ixnVolcano", height = "420px"),
                             br(),
+                            conditionalPanel(
+                              condition = "input.ixnMode == 'pairwise'",
+                              plotOutput("ixnScatter", height = "460px"),
+                              br()
+                            ),
                             DT::dataTableOutput("ixnTable")
                      )
                    ),
@@ -5644,6 +5649,86 @@ server <- function(input, output, session) {
       ) +
       theme_minimal(base_size = 13) +
       theme(legend.position = "top")
+  })
+  
+  # --- Interaction simple-effect scatter (pairwise mode only) ---
+  # Decomposes the interaction into its two simple effects (effect 1 on x,
+  # effect 2 on y). Points off the dashed y=x diagonal indicate genotype x
+  # condition interaction. Respects the same shrunken / top-N controls as the
+  # volcano so the two plots stay in sync.
+  output$ixnScatter <- renderPlot({
+    req(ixnRes())
+    req(input$ixnMode == "pairwise")
+    req(input$ixnNum1, input$ixnDen1, input$ixnNum2, input$ixnDen2)
+    
+    df <- ixnRes()
+    df <- df[which(df$significant), , drop = FALSE]
+    validate(need(nrow(df) > 0,
+                  "No significant interaction genes to plot. Try relaxing thresholds."))
+    
+    # Resolve which per-effect LFC columns to use (shrunken when toggle is on
+    # and the columns are present; otherwise the unshrunken MLE).
+    eff1_raw <- paste0("LFC_", input$ixnNum1, "_vs_", input$ixnDen1)
+    eff2_raw <- paste0("LFC_", input$ixnNum2, "_vs_", input$ixnDen2)
+    eff1_shr <- paste0(eff1_raw, "_shrunk")
+    eff2_shr <- paste0(eff2_raw, "_shrunk")
+    
+    use_shrunk <- isTRUE(input$ixnVolcUseShrunk) &&
+      all(c(eff1_shr, eff2_shr) %in% names(df))
+    
+    eff1_col <- if (use_shrunk) eff1_shr else eff1_raw
+    eff2_col <- if (use_shrunk) eff2_shr else eff2_raw
+    
+    validate(need(all(c(eff1_col, eff2_col) %in% names(df)),
+                  "Per-effect LFC columns not found for the current contrast."))
+    
+    df$x_eff <- df[[eff1_col]]
+    df$y_eff <- df[[eff2_col]]
+    df <- df[is.finite(df$x_eff) & is.finite(df$y_eff), , drop = FALSE]
+    
+    # Use the same colour mapping as the volcano for visual consistency
+    pattern_colours <- c(
+      "Both UP (magnitude differs)"    = "#E69F00",
+      "Both DOWN (magnitude differs)"  = "#56B4E9",
+      "Effect 1 UP / Effect 2 DOWN"    = "darkred",
+      "Effect 1 DOWN / Effect 2 UP"    = "#009E73",
+      "Near zero"                      = "#CC79A7"
+    )
+    present_levels <- intersect(names(pattern_colours), unique(df$Pattern))
+    df$Pattern <- factor(df$Pattern, levels = present_levels)
+    
+    # Labels
+    top_genes <- head(df[order(df$padj), ], input$ixnVolcTop)
+    
+    # Symmetric axis range so the diagonal reads cleanly
+    rng <- range(c(df$x_eff, df$y_eff), na.rm = TRUE)
+    lim <- c(-1, 1) * max(abs(rng))
+    
+    x_lab <- bquote(.(input$ixnNum1) - .(input$ixnDen1) ~ "(" * .(if (use_shrunk) "shrunken " else "") * log[2] * "FC)")
+    y_lab <- bquote(.(input$ixnNum2) - .(input$ixnDen2) ~ "(" * .(if (use_shrunk) "shrunken " else "") * log[2] * "FC)")
+    plot_title <- paste0("Interaction decomposition  (n = ", nrow(df),
+                         " significant", if (use_shrunk) ", shrunken LFCs" else "", ")")
+    
+    ggplot(df, aes(x = x_eff, y = y_eff)) +
+      geom_hline(yintercept = 0, colour = "grey85") +
+      geom_vline(xintercept = 0, colour = "grey85") +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed",
+                  colour = "grey55") +
+      geom_point(aes(colour = Pattern), size = 2, alpha = 0.75) +
+      scale_colour_manual(values = pattern_colours[present_levels],
+                          name = "Pattern", drop = FALSE) +
+      ggrepel::geom_text_repel(
+        data = top_genes,
+        aes(label = GeneID), size = 3, max.overlaps = 25,
+        min.segment.length = 0
+      ) +
+      coord_fixed(xlim = lim, ylim = lim) +
+      labs(x = x_lab, y = y_lab, title = plot_title,
+           subtitle = "Dashed line: equal response in both contrasts. Distance from the diagonal is the interaction.") +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "top",
+            legend.text = element_text(size = 10),
+            plot.subtitle = element_text(size = 11, colour = "grey30"))
   })
   
   # --- Interaction results table ---
