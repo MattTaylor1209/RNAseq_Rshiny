@@ -5373,6 +5373,49 @@ server <- function(input, output, session) {
       })
       
       if (is.null(res)) return()
+      
+      if (isTRUE(isolate(input$applyLfcShrink))) {
+        shrink_method <- isolate(input$shrinkMethod)
+        
+        # Arbitrary interaction contrasts are numeric vectors, not single
+        # coefficients — only ashr can shrink these directly. apeglm/normal
+        # require the contrast to be a single name in resultsNames(dds).
+        if (shrink_method != "ashr") {
+          showNotification(
+            paste0("Only 'ashr' can shrink arbitrary interaction contrasts. ",
+                   "Falling back to ashr for this tab."),
+            type = "warning", duration = 6)
+          shrink_method <- "ashr"
+        }
+        
+        appendLog(paste0("Applying LFC shrinkage (method: ", shrink_method, ")..."))
+        
+        shrunk_res <- tryCatch({
+          lfcShrink(
+            dds,
+            contrast = contrast_vec,   # the SAME vector used for results() above
+            type     = shrink_method,
+            res      = res
+            # Deliberately NOT setting svalue = TRUE — we need padj preserved
+            # for downstream ordering, filtering, and the volcano plot.
+            # Deliberately NOT re-passing lfcThreshold — already applied by results().
+          )
+        }, error = function(e) {
+          showNotification(paste("LFC shrinkage failed:", e$message),
+                           type = "error", duration = 8)
+          appendLog(paste("LFC shrinkage failed:", e$message))
+          NULL
+        })
+        
+        # Only overwrite res on success — otherwise keep the unshrunken version
+        if (!is.null(shrunk_res)) {
+          res <- shrunk_res
+          appendLog("LFC shrinkage applied successfully.")
+        } else {
+          appendLog("Keeping unshrunken LFCs.")
+        }
+      }
+      
       incProgress(0.6)
       
       res_df <- as.data.frame(res)
@@ -5382,9 +5425,26 @@ server <- function(input, output, session) {
       # ---- Individual effect LFCs (pairwise mode only) ----
       if (is_pairwise) {
         contrast_eff1 <- all_group_mean_rows[, num1] - all_group_mean_rows[, den1]
-        res_eff1 <- results(dds, contrast = contrast_eff1)
         contrast_eff2 <- all_group_mean_rows[, num2] - all_group_mean_rows[, den2]
+        
+        res_eff1 <- results(dds, contrast = contrast_eff1)
         res_eff2 <- results(dds, contrast = contrast_eff2)
+        
+        # Shrink per-effect LFCs so the Pattern classification and any
+        # downstream scatter/plot match the shrunken interaction LFC.
+        if (isTRUE(isolate(input$applyLfcShrink))) {
+          appendLog("Shrinking per-effect LFCs (ashr)...")
+          res_eff1_shrunk <- tryCatch(
+            lfcShrink(dds, contrast = contrast_eff1, type = "ashr", res = res_eff1),
+            error = function(e) {
+              appendLog(paste("Shrink eff1 failed:", e$message)); NULL })
+          res_eff2_shrunk <- tryCatch(
+            lfcShrink(dds, contrast = contrast_eff2, type = "ashr", res = res_eff2),
+            error = function(e) {
+              appendLog(paste("Shrink eff2 failed:", e$message)); NULL })
+          if (!is.null(res_eff1_shrunk)) res_eff1 <- res_eff1_shrunk
+          if (!is.null(res_eff2_shrunk)) res_eff2 <- res_eff2_shrunk
+        }
         
         eff1_label <- paste0("LFC_", num1, "_vs_", den1)
         eff2_label <- paste0("LFC_", num2, "_vs_", den2)
@@ -5407,15 +5467,26 @@ server <- function(input, output, session) {
       if (!is_pairwise) {
         w <- get_custom_weights()
         active_groups <- names(w)[w != 0]
-        # Use user-selected reference group
         ref_group <- if (!is.null(input$ixnRefGroup) && input$ixnRefGroup %in% grp_levels) {
           input$ixnRefGroup
         } else {
           grp_levels[1]
         }
+        do_shrink <- isTRUE(isolate(input$applyLfcShrink))
+        if (do_shrink) appendLog("Shrinking per-group LFCs (ashr)...")
+        
         for (g in setdiff(active_groups, ref_group)) {
           eff_vec <- all_group_mean_rows[, g] - all_group_mean_rows[, ref_group]
           res_eff <- results(dds, contrast = eff_vec)
+          
+          if (do_shrink) {
+            shrunk <- tryCatch(
+              lfcShrink(dds, contrast = eff_vec, type = "ashr", res = res_eff),
+              error = function(e) {
+                appendLog(paste("Shrink", g, "failed:", e$message)); NULL })
+            if (!is.null(shrunk)) res_eff <- shrunk
+          }
+          
           col_name <- paste0("LFC_", g, "_vs_", ref_group)
           res_df[[col_name]] <- res_eff[rownames(res_df), "log2FoldChange"]
         }
@@ -5520,7 +5591,10 @@ server <- function(input, output, session) {
     
     # Find the dynamically-named individual LFC columns
     lfc_cols <- grep("^LFC_", names(df), value = TRUE)
-    fmt_cols <- c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj", lfc_cols)
+    fmt_cols <- intersect(
+      c("baseMean", "log2FoldChange", "lfcSE", "stat", "pvalue", "padj", lfc_cols),
+      names(df)
+    )
     
     DT::datatable(
       df,
