@@ -4548,7 +4548,7 @@ server <- function(input, output, session) {
     }
     if (has_ixn) {
       mode_choices <- c(mode_choices,
-                        "Interaction contrast (sig. genes)" = "interaction")
+                        "Interaction contrast" = "interaction")
     }
     
     default_sel <- if (has_ixn && !has_venn) "interaction" else unname(mode_choices[1])
@@ -4582,7 +4582,7 @@ server <- function(input, output, session) {
       conditionalPanel(
         condition = "input.dsSetMode == 'interaction'",
         selectInput("dsIxnDirection", "Direction filter:",
-                    choices = c("All significant"  = "all",
+                    choices = c("All"  = "all",
                                 "Upregulated only"   = "up",
                                 "Downregulated only" = "down"),
                     selected = "all"),
