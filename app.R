@@ -340,6 +340,14 @@ ui <- fluidPage(
                             plotOutput("elbowPlot", height = "300px")
                      )
                    ),
+                   fluidRow(
+                     column(3, selectInput("pcChoice", "Show loadings for:",
+                                           choices = paste0("PC", 1:5), selected = "PC1")),
+                     column(3, numericInput("pcTopN", "Top N genes per end:", value = 15, min = 5, max = 50))
+                   ),
+                   plotOutput("pcLoadingPlot", height = "450px"),
+                   DT::dataTableOutput("pcLoadingTable"),
+                   downloadButton("dl_pc_loadings", "Download loadings"),
                    conditionalPanel(
                      condition = "output.analysisReady",
                      downloadButton("dl_vsd", "Download vst-normalised count matrix")
@@ -1990,7 +1998,7 @@ server <- function(input, output, session) {
     })
     # Output from reactive expression
     list(dds = dds, res = res, res_shrunk = res_shrunk, vsd = vsd, pca_df = pca_df, percentVar = percentVar,
-         res_entrez = res_entrez, unfiltered_dds = unfiltered_dds)
+         res_entrez = res_entrez, unfiltered_dds = unfiltered_dds, pcDat = pcDat)
     
   })
   
@@ -2071,6 +2079,50 @@ server <- function(input, output, session) {
         y = "% Variance Explained"
       )
   })
+  
+  pc_loadings_df <- reactive({
+    req(analysisResults())
+    rot <- analysisResults()$pcDat$rotation
+    pc  <- input$pcChoice
+    data.frame(
+      Gene       = rownames(rot),
+      Loading    = rot[, pc],
+      PctVarPC   = (rot[, pc]^2) * 100,
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  output$pcLoadingPlot <- renderPlot({
+    df <- pc_loadings_df()
+    n  <- input$pcTopN
+    top_pos <- df[order(df$Loading, decreasing = TRUE), ][1:n, ]
+    top_neg <- df[order(df$Loading, decreasing = FALSE), ][1:n, ]
+    plot_df <- rbind(top_pos, top_neg)
+    plot_df$End <- ifelse(plot_df$Loading > 0,
+                          paste0("+", input$pcChoice),
+                          paste0("-", input$pcChoice))
+    
+    ggplot(plot_df, aes(x = reorder(Gene, Loading), y = Loading, colour = End)) +
+      geom_segment(aes(xend = Gene, yend = 0)) +
+      geom_point(size = 4) +
+      coord_flip() +
+      theme_minimal(base_size = 14) +
+      labs(x = NULL, y = paste("Loading on", input$pcChoice),
+           title = paste("Top genes driving", input$pcChoice))
+  })
+  
+  output$pcLoadingTable <- DT::renderDataTable({
+    df <- pc_loadings_df()
+    df <- df[order(abs(df$Loading), decreasing = TRUE), ]
+    DT::datatable(df, options = list(pageLength = 20), rownames = FALSE) |>
+      DT::formatRound(c("Loading", "PctVarPC"), 4)
+  })
+  
+  output$dl_pc_loadings <- downloadHandler(
+    filename = function() paste0("pca_loadings_", input$pcChoice, ".csv"),
+    content  = function(f) readr::write_csv(pc_loadings_df(), f)
+  )
+  
   
   # Download VSD count matrix
   output$dl_vsd <- downloadHandler(
