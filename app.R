@@ -2537,7 +2537,11 @@ server <- function(input, output, session) {
       need(inherits(gseres, c("gseaResult","enrichResult","compareClusterResult")),
            paste("dotplot() needs a gseaResult/enrichResult. Got:", paste(class(gseres), collapse=", ")))
     )
-    enrichplot::dotplot(gseres, showCategory = input$numcategories, color = "NES")  # <- enrichplot
+    enrichplot::dotplot(gseres, showCategory = input$numcategories, color = "NES") +
+      ggplot2::scale_fill_gradient2(
+        low = "blue3", mid = "white", high = "red3",
+        midpoint = 0, name = "NES"
+      )  # <- enrichplot
   })
   
   
@@ -5039,7 +5043,11 @@ server <- function(input, output, session) {
         df_check <- as.data.frame(gse_local)
         validate(need(nrow(df_check) > 0, "No significant GSEA terms found."))
         n_show <- min(input$cmpGseaNum, nrow(df_check))
-        enrichplot::dotplot(gse_local, showCategory = n_show, color = "NES")
+        enrichplot::dotplot(gse_local, showCategory = n_show, color = "NES") +
+          ggplot2::scale_fill_gradient2(
+            low = "blue3", mid = "white", high = "red3",
+            midpoint = 0, name = "NES"
+          )
       })
       output$cmpGseaEnrichPlot <- renderPlot({
         gse_local <- cmpGseaRes()
