@@ -623,6 +623,8 @@ ui <- fluidPage(
                             selectInput("exploreHeatColor", "Color scheme:",
                                         choices = c("Blue-White-Red" = "RdBu", "Viridis" = "viridis"),
                                         selected = "RdBu"),
+                            selectInput("exploreHeatmapGroups", "Groups to include:",
+                                        choices = NULL, selected = NULL, multiple = TRUE),
                             hr(),
                             h5("Volcano options"),
                             sliderInput("exploreVolcLabelSize", "Label size", 1, 8, 3, step = 0.5),
@@ -2281,6 +2283,9 @@ server <- function(input, output, session) {
     updateSelectInput(session, "heatmapGroups",
                       choices = available_groups,
                       selected = available_groups)  # Default: all groups selected
+    updateSelectInput(session, "exploreHeatmapGroups",
+                      choices = available_groups,
+                      selected = available_groups)
   })
   
   # Heatmap plot
@@ -2986,11 +2991,20 @@ server <- function(input, output, session) {
     
     hm_mat <- mat[genes_in_mat, , drop = FALSE]
     
+    # Filter samples by selected groups
+    validate(need(length(input$exploreHeatmapGroups) > 0,
+                  "Please select at least one group to display."))
+    selected_samples <- colData(vsd)$Group %in% input$exploreHeatmapGroups
+    hm_mat <- hm_mat[, selected_samples, drop = FALSE]
+    validate(need(ncol(hm_mat) >= 2,
+                  "Need at least 2 samples after group filtering."))
+    
     # Annotation
     sample_annotation <- data.frame(
-      Group = colData(vsd)$Group,
+      Group = colData(vsd)$Group[selected_samples],
       row.names = colnames(hm_mat)
     )
+    
     n_groups <- length(unique(sample_annotation$Group))
     if (n_groups <= 8) {
       group_colors <- RColorBrewer::brewer.pal(max(n_groups, 3), "Set2")[seq_len(n_groups)]
