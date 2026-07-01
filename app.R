@@ -2039,6 +2039,7 @@ server <- function(input, output, session) {
                       box.padding = 1,
                       point.padding = 1,
                       min.segment.length = 0,
+                      max.overlaps = Inf,
                       segment.size = if (input$labelsize == 0) 0 else 0.5) +
       scale_shape_manual(values = shape_vals) +
       guides(fill = guide_legend(override.aes = list(shape = 22))) +
