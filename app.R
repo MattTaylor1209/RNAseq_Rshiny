@@ -110,6 +110,8 @@ required_packages <- c("limma",
                        
                        "rtracklayer",
                        
+                       "sortable",
+                       
                        "markdown",
                        
                        "treemap",
@@ -243,7 +245,7 @@ ui <- fluidPage(
                             "Priority: uploaded length file > lengths in the count file > GTF > biomaRt.")
                  ),
                  radioButtons("sampleInfoMode", "Sample info source:",
-                              choices = c("Upload file" = "upload", "Define groups manually (must know column order)" = "manual"),
+                              choices = c("Upload file" = "upload", "Define groups manually" = "manual"),
                               selected = "upload", inline = TRUE),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'upload'",
@@ -251,6 +253,9 @@ ui <- fluidPage(
                  ),
                  conditionalPanel(
                    condition = "input.sampleInfoMode == 'manual'",
+                   helpText("Groups are assigned to count columns in the order shown on the",
+                            tags$b("Count Columns"), "tab. Drag columns there so each group's",
+                            "replicates are adjacent, then add groups in that order."),
                    textInput("manualGroupName", "Group name:", placeholder = "e.g. Control"),
                    numericInput("manualGroupN", "Number of replicates (n):", value = 3, min = 1, step = 1),
                    actionButton("addGroupBtn", "Add group", icon = icon("plus")),
@@ -309,8 +314,34 @@ ui <- fluidPage(
     #### ---- Main Panel UI ---- ####
     mainPanel(
       conditionalPanel(
-        condition = "output.inputsReady",
+        condition = "output.hasCounts",
         tabsetPanel(
+          id = "mainTabs",
+          tabPanel("Count Columns", value = "countCols",
+                   fluidRow(
+                     column(12,
+                            h4("Count table columns"),
+                            p("Columns as they appear in the uploaded count data (for featureCounts RDS files,",
+                              "these are the BAM file names). Drag columns to reorder them.",
+                              "Manually defined groups are assigned to columns in this order;",
+                              "an uploaded sample info file is matched by name (SampleName or FileName),",
+                              "so its ordering is unaffected unless no names match."))
+                   ),
+                   fluidRow(
+                     column(5,
+                            actionButton("colOrderAlpha", "Sort A\u2013Z", icon = icon("sort-alpha-down")),
+                            actionButton("colOrderReset", "Reset to file order", icon = icon("undo")),
+                            br(), br(),
+                            uiOutput("countColOrderUI")
+                     ),
+                     column(7,
+                            h5("Column summary (current order)"),
+                            DT::dataTableOutput("countColSummary"),
+                            h5("First rows of the count table (current order)"),
+                            DT::dataTableOutput("countColPreview")
+                     )
+                   )
+          ),
           tabPanel("Input Preview", 
                    tableOutput("previewTable"),
                    h4("Log"),
@@ -1599,6 +1630,17 @@ server <- function(input, output, session) {
     mg$`Sample names` <- vapply(seq_len(nrow(mg)), function(i) {
       paste0(mg$Group[i], seq_len(mg$n[i]), collapse = ", ")
     }, character(1))
+    # Which count columns (in the current Count Columns order) each group receives
+    cols <- tryCatch(ordered_col_labels(), error = function(e) NULL)
+    if (!is.null(cols)) {
+      ends   <- cumsum(mg$n)
+      starts <- ends - mg$n + 1
+      mg$`Count columns` <- vapply(seq_len(nrow(mg)), function(i) {
+        idx <- starts[i]:ends[i]
+        idx <- idx[idx <= length(cols)]
+        if (length(idx) == 0) "(none left)" else paste(cols[idx], collapse = ", ")
+      }, character(1))
+    }
     mg
   })
   
@@ -1715,7 +1757,7 @@ server <- function(input, output, session) {
   })
   
   # Tell UI when both files are ready
-  output$inputsReady <- reactive({
+  inputs_ready <- reactive({
     has_counts <- !is.null(input$countsFile)
     has_info   <- if (input$sampleInfoMode == "upload") {
       !is.null(input$sampleInfoFile)
@@ -1724,7 +1766,23 @@ server <- function(input, output, session) {
     }
     has_counts && has_info
   })
+  output$inputsReady <- inputs_ready
   outputOptions(output, "inputsReady", suspendWhenHidden = FALSE)
+  
+  # The main tab set appears as soon as count data is uploaded, so the Count
+  # Columns tab can be used before sample info exists; the analysis tabs stay
+  # hidden until sample info is ready too.
+  output$hasCounts <- reactive({ !is.null(input$countsFile) })
+  outputOptions(output, "hasCounts", suspendWhenHidden = FALSE)
+  
+  analysis_tabs <- c("Input Preview", "Sample Info", "PCA", "Other QC", "DE Results", "Heatmap", "GO", "GSEA", "GAGE (KEGG)", "Standard volcano plot", "Interactive Volcano Plot", "Explore Gene Sets", "Boxplot", "Compare Contrasts")
+  observe({
+    ready <- inputs_ready()
+    for (tb in analysis_tabs) {
+      if (ready) showTab("mainTabs", tb) else hideTab("mainTabs", tb)
+    }
+    if (!ready) updateTabsetPanel(session, "mainTabs", selected = "countCols")
+  })
   
   # Reactive to get unique group names
   group_levels <- reactive({
@@ -1770,6 +1828,120 @@ server <- function(input, output, session) {
     updateSelectInput(session, "contrastDenominator",
                       choices = input$groupOrder,
                       selected = head(input$groupOrder, 1))
+  })
+  
+  # ---- Count Columns tab: preview and reorder raw count columns ----
+  # Column order is stored as integer positions into the uploaded matrix, so
+  # duplicate or awkward column names can't cause ambiguity.
+  # Display-only short names: drop directory and featureCounts/Rsubread suffixes
+  # (e.g. "x/y/S1.fastq.gz.subread.BAM" -> "S1"); full names are kept for matching.
+  short_col_name <- function(x) {
+    sub("(\\.(fastq|fq))?(\\.gz)?(\\.subread)?(\\.sorted)?\\.bam$", "",
+        basename(x), ignore.case = TRUE)
+  }
+  
+  colOrder        <- reactiveVal(NULL)  # integer positions, in display order
+  colOrderVersion <- reactiveVal(0)     # bumped to force the drag list to re-render
+  
+  raw_col_names <- reactive({
+    # Evaluate counts_data() on its own first: if no file is uploaded its req()
+    # must cancel quietly, but inside colnames()/ncol() (S4 generics once
+    # Bioconductor is loaded) the silent condition gets rethrown as a real error.
+    counts <- counts_data()$counts
+    cn <- colnames(counts)
+    if (is.null(cn)) cn <- paste0("Column", seq_len(ncol(counts)))
+    cn
+  })
+  
+  set_col_order <- function(ord) {
+    colOrder(ord)
+    colOrderVersion(isolate(colOrderVersion()) + 1)
+  }
+  
+  # New count file -> reset to file order
+  observeEvent(counts_data(), {
+    set_col_order(seq_along(raw_col_names()))
+  })
+  
+  observeEvent(input$colOrderReset, {
+    req(raw_col_names())
+    set_col_order(seq_along(raw_col_names()))
+  })
+  
+  observeEvent(input$colOrderAlpha, {
+    req(raw_col_names())
+    set_col_order(stringr::str_order(short_col_name(raw_col_names()), numeric = TRUE))
+  })
+  
+  # Drag-and-drop list. Re-rendered only on load/reset/sort (not on every drag),
+  # so dragging stays smooth; the list's own state is read back below.
+  output$countColOrderUI <- renderUI({
+    colOrderVersion()
+    cn  <- isolate(raw_col_names())
+    ord <- isolate(colOrder())
+    req(cn, ord)
+    labels <- setNames(as.list(paste0(short_col_name(cn[ord]))), as.character(ord))
+    sortable::rank_list(
+      text     = "Drag to reorder columns:",
+      labels   = labels,
+      input_id = "countColOrder"
+    )
+  })
+  
+  observeEvent(input$countColOrder, {
+    ord <- suppressWarnings(as.integer(input$countColOrder))
+    n   <- length(raw_col_names())
+    if (length(ord) == n && !anyNA(ord) && setequal(ord, seq_len(n))) colOrder(ord)
+  })
+  
+  # Short column names in the current order (used by the manual group table)
+  ordered_col_labels <- reactive({
+    cn  <- raw_col_names()
+    ord <- colOrder()
+    req(length(ord) == length(cn))
+    short_col_name(cn[ord])
+  })
+  
+  output$countColSummary <- DT::renderDataTable({
+    counts <- counts_data()$counts
+    cn     <- raw_col_names()
+    ord    <- colOrder()
+    req(length(ord) == ncol(counts))
+    
+    df <- data.frame(
+      Position      = seq_along(ord),
+      Column        = short_col_name(cn[ord]),
+      `File order`  = ord,
+      `Total counts` = format(colSums(counts)[ord], big.mark = ","),
+      check.names = FALSE, stringsAsFactors = FALSE
+    )
+    if (any(df$Column != cn[ord])) df$`Original name` <- cn[ord]
+    
+    # Show the labels manual groups would assign, by position
+    if (input$sampleInfoMode == "manual") {
+      mg <- manualGroups()
+      if (nrow(mg) > 0) {
+        lab <- unlist(lapply(seq_len(nrow(mg)), function(i) paste0(mg$Group[i], seq_len(mg$n[i]))))
+        grp <- rep(mg$Group, mg$n)
+        k   <- seq_len(min(length(lab), nrow(df)))
+        df$`Manual group` <- NA_character_; df$`Manual group`[k] <- grp[k]
+        df$`Sample name`  <- NA_character_; df$`Sample name`[k]  <- lab[k]
+      }
+    }
+    
+    DT::datatable(df, rownames = FALSE,
+                  options = list(pageLength = 25, dom = "tip", scrollX = TRUE))
+  })
+  
+  output$countColPreview <- DT::renderDataTable({
+    counts <- counts_data()$counts
+    ord    <- colOrder()
+    req(length(ord) == ncol(counts))
+    prev <- head(counts[, ord, drop = FALSE], 10)
+    colnames(prev) <- short_col_name(raw_col_names()[ord])
+    prev <- data.frame(GeneID = rownames(prev), prev, check.names = FALSE)
+    DT::datatable(prev, rownames = FALSE,
+                  options = list(dom = "t", scrollX = TRUE, ordering = FALSE))
   })
   
   # ---- Align count columns to sample info (by name wherever possible) ----
@@ -1869,7 +2041,12 @@ server <- function(input, output, session) {
                "Check this is correct."),
         type = "warning", duration = 10, id = "sampleAlignWarning")
     }
-    appendLog("Samples assigned to count columns by column order (no name match).")
+    # Use the order set on the Count Columns tab (file order by default)
+    ord <- colOrder()
+    if (length(ord) == ncol(counts) && setequal(ord, seq_len(ncol(counts)))) {
+      counts <- counts[, ord, drop = FALSE]
+    }
+    appendLog("Samples assigned to count columns by position (Count Columns tab order; no name match).")
     colnames(counts) <- sn
     counts
   })
