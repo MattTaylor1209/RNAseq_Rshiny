@@ -108,6 +108,8 @@ required_packages <- c("limma",
                        
                        "minpack.lm",
                        
+                       "rtracklayer",
+                       
                        "markdown",
                        
                        "treemap",
@@ -189,7 +191,7 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 
 # Increase upload size 
 
-options(shiny.maxRequestSize = 50 * 1024^2)  # 50 MB
+options(shiny.maxRequestSize = 1024 * 1024^2)  # 1 GB (uncompressed GTFs can be large)
 
 # Set seed for anything which requires random number generation (for reproducibility)
 
@@ -217,14 +219,28 @@ ui <- fluidPage(
                  conditionalPanel(
                    condition = "output.isPlainCountTable",
                    uiOutput("geneLengthStatusUI"),
-                   actionButton("fetchBiomartBtn", HTML("Fetch gene lengths from biomaRt<br><small>(check organism first)</small>"),
-                                icon = icon("download")),
-                   helpText("Fetches median transcript lengths per gene from Ensembl (requires internet)."),
-                   fileInput("geneLengthFile",
-                             "Or upload Gene Lengths (.csv/.tsv/.txt — two columns: GeneID, Length)",
-                             accept = c(".csv", ".tsv", ".txt")),
+                   fileInput("gtfFile",
+                             "Upload GTF annotation (.gtf / .gtf.gz) — recommended",
+                             accept = c(".gtf", ".gz")),
+                   helpText("Computes union-exon gene lengths locally (the same definition featureCounts uses).",
+                            "Use the GTF you counted against. Matches on gene_id or gene_name/gene_symbol,",
+                            "whichever fits your count table."),
+                   tags$div(
+                     style = "margin-top: 10px; padding-top: 6px; border-top: 1px solid #ddd;",
+                     h5("Other gene length sources"),
+                     numericInput("ensemblRelease", "Ensembl archive release for biomaRt:",
+                                  value = 115, min = 80, step = 1),
+                     actionButton("fetchBiomartBtn", HTML("Fetch gene lengths from Ensembl (biomaRt)<br><small>(check organism first)</small>"),
+                                  icon = icon("download")),
+                     helpText("Fetches median transcript lengths from an Ensembl archive site (requires internet).",
+                              "BioMart is no longer served from the current Ensembl site, so an archive release is used;",
+                              "archives are eventually retired, so prefer the GTF option."),
+                     fileInput("geneLengthFile",
+                               "Upload Gene Lengths (.csv/.tsv/.txt — two columns: GeneID, Length)",
+                               accept = c(".csv", ".tsv", ".txt"))
+                   ),
                    helpText("Gene lengths enable length-bias correction in GO analysis.",
-                            "Uploaded file will override biomaRt-fetched or auto-detected lengths.")
+                            "Priority: uploaded length file > lengths in the count file > GTF > biomaRt.")
                  ),
                  radioButtons("sampleInfoMode", "Sample info source:",
                               choices = c("Upload file" = "upload", "Define groups manually (must know column order)" = "manual"),
@@ -1119,6 +1135,7 @@ server <- function(input, output, session) {
         need(!is.null(obj$counts),      "RDS file does not contain a $counts matrix."),
         need(!is.null(obj$annotation),  "RDS file does not contain an $annotation data frame.")
       )
+      obj$length_source <- "featureCounts annotation"
       return(obj)
     }
     
@@ -1277,7 +1294,15 @@ server <- function(input, output, session) {
       # Note: gene length status is shown via geneLengthStatusUI in the sidebar
     }
     
-    list(counts = mat, annotation = annotation_df)
+    length_source <- if (!is.null(input$geneLengthFile)) {
+      "uploaded gene length file"
+    } else if (fc_length_extracted) {
+      paste0("'", length_col_name, "' column in count file")
+    } else {
+      NA_character_
+    }
+    
+    list(counts = mat, annotation = annotation_df, length_source = length_source)
   })
   
   # Gene length status indicator
@@ -1294,7 +1319,8 @@ server <- function(input, output, session) {
         icon("check-circle", style = "color: #28a745;"),
         tags$b(paste0("Gene lengths detected: ", n_with, "/", n_total, " genes.")),
         tags$br(),
-        tags$small("Length-bias correction will be applied in GO analysis.")
+        tags$small(paste0("Source: ", counts_data_with_lengths()$length_source, ". ",
+                          "Length-bias correction will be applied in GO analysis."))
       )
     } else {
       tags$div(
@@ -1303,34 +1329,120 @@ server <- function(input, output, session) {
         tags$b("No gene lengths found in count file."),
         tags$br(),
         tags$small("GO analysis will run without length-bias correction.",
-                   "Fetch lengths via biomaRt or upload a gene length file.")
+                   "Upload a GTF (recommended), fetch from Ensembl, or upload a gene length file.")
       )
     }
   })
   
-  # ---- biomaRt gene length fetching ----
-  biomartLengths <- reactiveVal(NULL)
+  # ---- External gene length sources (GTF, biomaRt) ----
+  gtfLengths     <- reactiveVal(NULL)  # list(tables = named list of data.frames, file = name)
+  biomartLengths <- reactiveVal(NULL)  # list(tables = list(data.frame), release = n)
   
-  # Wrapper reactive: overlays biomaRt-fetched lengths onto counts_data() when
-  # the file itself has no lengths and no user-uploaded length file
-  counts_data_with_lengths <- reactive({
-    cd <- counts_data()
-    bm <- biomartLengths()
+  # Strip Ensembl-style version suffixes (ENSG000001.15 -> ENSG000001)
+  strip_id_version <- function(x) sub("\\.\\d+$", "", x)
+  
+  # Given count-table gene IDs and one or more candidate length tables
+  # (each a data.frame with GeneID + Length), pick the table/key combination
+  # that matches the most IDs (optionally ignoring version suffixes) and
+  # return lengths aligned to gene_ids, plus which key was used.
+  match_length_tables <- function(gene_ids, tables) {
+    key_funs <- list(exact = identity, unversioned = strip_id_version)
+    best <- list(n = 0, lengths = rep(NA_real_, length(gene_ids)), key = NA_character_)
+    for (tbl_name in names(tables)) {
+      tbl <- tables[[tbl_name]]
+      for (kf in names(key_funs)) {
+        f   <- key_funs[[kf]]
+        idx <- match(f(gene_ids), f(tbl$GeneID))
+        n   <- sum(!is.na(idx))
+        if (n > best$n) {
+          best <- list(n = n, lengths = as.numeric(tbl$Length[idx]),
+                       key = if (kf == "exact") tbl_name else paste0(tbl_name, ", ignoring version suffixes"))
+        }
+      }
+    }
+    best
+  }
+  
+  # Read a GTF and compute union-exon length per gene (featureCounts' definition),
+  # keyed by gene_id and, where present, gene_name / gene_symbol.
+  compute_gtf_lengths <- function(path) {
+    exons <- rtracklayer::readGFF(path, version = 2,
+                                  tags   = c("gene_id", "gene_name", "gene_symbol"),
+                                  filter = list(type = "exon"))
+    validate(need(nrow(exons) > 0, "No exon features found in the GTF file."))
+    gr <- GenomicRanges::makeGRangesFromDataFrame(as.data.frame(exons),
+                                                  keep.extra.columns = TRUE)
+    lengths_by <- function(key) {
+      k  <- as.character(S4Vectors::mcols(gr)[[key]])
+      ok <- !is.na(k) & nzchar(k)
+      if (!any(ok)) return(NULL)
+      w  <- sum(IRanges::width(GenomicRanges::reduce(split(gr[ok], k[ok]))))
+      data.frame(GeneID = names(w), Length = as.numeric(w), stringsAsFactors = FALSE)
+    }
+    tables <- list(
+      "GTF gene_id"     = lengths_by("gene_id"),
+      "GTF gene_name"   = lengths_by("gene_name"),
+      "GTF gene_symbol" = lengths_by("gene_symbol")
+    )
+    Filter(Negate(is.null), tables)
+  }
+  
+  observeEvent(input$gtfFile, {
+    req(input$gtfFile)
+    # Copy to a path with the original file name so .gz is detected reliably
+    tmp <- file.path(tempdir(), basename(input$gtfFile$name))
+    file.copy(input$gtfFile$datapath, tmp, overwrite = TRUE)
+    on.exit(unlink(tmp), add = TRUE)
     
-    # Only apply biomaRt lengths if the annotation currently has no lengths
-    # (user-uploaded file or featureCounts Length column take priority)
-    if (!is.null(bm) && all(is.na(cd$annotation$Length))) {
-      ann <- cd$annotation[, "GeneID", drop = FALSE]
-      ann <- dplyr::left_join(ann, bm, by = "GeneID")
-      # Fill any unmatched genes with NA
-      if (!"Length" %in% names(ann)) ann$Length <- NA_real_
-      cd$annotation <- ann
+    withProgress(message = "Reading GTF and computing gene lengths...", value = 0.2, {
+      tables <- tryCatch(compute_gtf_lengths(tmp), error = function(e) {
+        showNotification(paste("Could not read GTF:", conditionMessage(e)),
+                         type = "error", duration = 10)
+        NULL
+      })
+      setProgress(1)
+    })
+    req(length(tables) > 0)
+    
+    gtfLengths(list(tables = tables, file = input$gtfFile$name))
+    n_genes <- max(vapply(tables, nrow, integer(1)))
+    showNotification(paste0("GTF: computed union-exon lengths for ", n_genes, " genes."),
+                     type = "message", duration = 6)
+  })
+  
+  # Wrapper reactive: overlays GTF- or biomaRt-derived lengths onto counts_data()
+  # when the count data has no lengths of its own and no length file was uploaded.
+  # Priority: uploaded length file > count-file lengths > GTF > biomaRt.
+  counts_data_with_lengths <- reactive({
+    cd  <- counts_data()
+    gtf <- gtfLengths()
+    bm  <- biomartLengths()
+    
+    if (all(is.na(cd$annotation$Length)) && (!is.null(gtf) || !is.null(bm))) {
+      ext <- if (!is.null(gtf)) gtf else bm
+      m   <- match_length_tables(cd$annotation$GeneID, ext$tables)
+      cd$annotation$Length <- m$lengths
+      cd$length_source <- if (!is.null(gtf)) {
+        paste0(gtf$file, " (matched on ", m$key, ")")
+      } else {
+        paste0("Ensembl release ", bm$release, " via biomaRt")
+      }
+      if (m$n == 0) {
+        showNotification("None of the count table's gene IDs matched the length source. Check the IDs/organism.",
+                         type = "warning", duration = 8, id = "lengthMatchWarning")
+      }
     }
     cd
   })
   
   observeEvent(input$fetchBiomartBtn, {
     req(counts_data())
+    
+    release <- input$ensemblRelease
+    if (!is.numeric(release) || is.na(release)) {
+      showNotification("Enter an Ensembl release number.", type = "error")
+      return()
+    }
     
     withProgress(message = "Connecting to Ensembl biomaRt...", value = 0, {
       incProgress(0.05)
@@ -1351,9 +1463,25 @@ server <- function(input, output, session) {
       id_type <- detect_gene_id_type(gene_ids)
       bm_gene_attr <- id_type$biomart
       
+      # BioMart is no longer served from the current Ensembl site (and the
+      # useast/asia mirrors are retired), so query a numbered archive host.
+      bm_host <- paste0("https://e", as.integer(release), ".ensembl.org")
+      
+      # Older biomaRt releases (< 2.68) auto-test www/useast.ensembl.org on first
+      # use. Now that BioMart and the useast mirror are retired, that test fails
+      # and biomaRt caches the cipher workaround "DEFAULT@SECLEVEL=1", which
+      # macOS curl rejects, breaking every later request (archives included).
+      # Reset the cached SSL settings to none, as biomaRt >= 2.68 does anyway.
+      # (This would also clear a manually set ssl_verifypeer = FALSE.)
+      if ("setEnsemblSSL" %in% getNamespaceExports("biomaRt")) {
+        suppressWarnings(suppressMessages(
+          try(biomaRt::setEnsemblSSL(list()), silent = TRUE)
+        ))
+      }
+      
       tryCatch({
-        setProgress(value = 0.05, message = "Connecting to Ensembl...")
-        ensembl <- biomaRt::useEnsembl(biomart = "genes", dataset = bm_dataset)
+        setProgress(value = 0.05, message = paste0("Connecting to ", bm_host, "..."))
+        ensembl <- biomaRt::useEnsembl(biomart = "genes", dataset = bm_dataset, host = bm_host)
         
         # --- Chunked query with progress updates ---
         chunk_size <- 5000
@@ -1394,7 +1522,7 @@ server <- function(input, output, session) {
         n_matched <- sum(gene_ids %in% gene_lengths$GeneID)
         n_total   <- length(gene_ids)
         
-        biomartLengths(gene_lengths)
+        biomartLengths(list(tables = list("Ensembl" = gene_lengths), release = as.integer(release)))
         
         setProgress(value = 1, message = "Done!")
         showNotification(
@@ -1405,8 +1533,9 @@ server <- function(input, output, session) {
         
       }, error = function(e) {
         showNotification(
-          paste0("biomaRt fetch failed: ", conditionMessage(e)),
-          type = "error", duration = 10
+          paste0("biomaRt fetch from ", bm_host, " failed: ", conditionMessage(e),
+                 " Try another archive release, or upload a GTF instead."),
+          type = "error", duration = 12
         )
       })
     })
