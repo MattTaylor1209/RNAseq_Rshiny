@@ -3,7 +3,7 @@
 # analyses (GO, GSEA, GAGE). Includes essential QC such as PCA, hierarchical
 # clustering/heatmaps, library size plots and count density plots. Also included
 # is the ability to explore specific gene sets (boxplots, volcanos etc), and
-# compare different contrasts. Differetial gene expression handled using 
+# compare different contrasts. Differential gene expression handled using 
 # DESeq2.
 
 required_packages <- c("limma",
@@ -1643,18 +1643,124 @@ server <- function(input, output, session) {
                       selected = head(input$groupOrder, 1))
   })
   
+  # ---- Align count columns to sample info (by name wherever possible) ----
+  #
+  # Two stages, so that changing the sample filter does not re-run the name
+  # matching (and re-fire its notification):
+  #   named_counts()   counts_data() + sample_info()  -> counts with columns
+  #                    renamed to SampleName, in sample-sheet order
+  #   aligned_counts() named_counts() + filtered_sample_info() -> list(counts,
+  #                    col_data) subset to the selected samples, with
+  #                    rownames(col_data) = SampleName so DESeqDataSetFromMatrix()
+  #                    will itself error on any misalignment.
+  #
+  # Matching order (first that matches EVERY sample wins):
+  #   1. SampleName vs count column names
+  #   2. FileName column (if present, e.g. BAM names for a featureCounts RDS)
+  #      vs count column names
+  #   Each is tried exactly, then ignoring directory / ".bam" suffix / case, then
+  #   additionally allowing for make.names()-mangled names.
+  #   3. Nothing matches at all (manual groups, unnamed columns) -> column order,
+  #      with a warning in upload mode
+  #   4. Some samples match but not all -> stop, listing the unmatched ones
+  
+  # Normalise a file/column name for matching: drop directory, .bam, case
+  norm_sample_name <- function(x) {
+    tolower(sub("\\.bam$", "", basename(as.character(x)), ignore.case = TRUE))
+  }
+  
+  # Match `keys` to `cols` under progressively looser normalisations.
+  # Returns list(idx, n_matched, unmatched): idx is an integer index into cols
+  # (one per key) if every key matches a unique column, otherwise NULL.
+  match_sample_keys <- function(keys, cols) {
+    if (is.null(cols)) return(list(idx = NULL, n_matched = 0, unmatched = keys))
+    variants <- list(
+      function(x) as.character(x),
+      norm_sample_name,
+      function(x) norm_sample_name(make.names(basename(as.character(x))))
+    )
+    best <- list(idx = NULL, n_matched = 0, unmatched = keys)
+    for (f in variants) {
+      cc <- f(cols)
+      if (anyDuplicated(cc)) next
+      idx <- match(f(keys), cc)
+      if (!anyNA(idx)) return(list(idx = idx, n_matched = length(idx), unmatched = character(0)))
+      if (sum(!is.na(idx)) > best$n_matched) {
+        best <- list(idx = NULL, n_matched = sum(!is.na(idx)), unmatched = keys[is.na(idx)])
+      }
+    }
+    best
+  }
+  
+  named_counts <- reactive({
+    counts <- counts_data()$counts
+    si     <- sample_info()
+    sn     <- as.character(si$SampleName)
+    
+    validate(need(!anyDuplicated(sn),
+                  paste0("Duplicate SampleName(s) in sample info: ",
+                         paste(unique(sn[duplicated(sn)]), collapse = ", "))))
+    
+    m   <- match_sample_keys(sn, colnames(counts))
+    how <- "SampleName"
+    
+    if (is.null(m$idx) && "FileName" %in% names(si)) {
+      m_fn <- match_sample_keys(as.character(si$FileName), colnames(counts))
+      if (!is.null(m_fn$idx) || m_fn$n_matched > m$n_matched) {
+        m   <- m_fn
+        how <- "FileName"
+      }
+    }
+    
+    if (!is.null(m$idx)) {
+      # Every sample matched by name: reorder to sample-sheet order and rename
+      counts <- counts[, m$idx, drop = FALSE]
+      colnames(counts) <- sn
+      appendLog(paste0("Matched ", length(sn), " samples to count columns by ", how, "."))
+      return(counts)
+    }
+    
+    if (m$n_matched > 0) {
+      validate(need(FALSE,
+                    paste0("Only ", m$n_matched, " of ", length(sn), " samples could be matched to ",
+                           "count columns by ", how, ". Unmatched: ",
+                           paste(m$unmatched, collapse = ", "),
+                           ". Check for typos or mismatched naming.")))
+    }
+    
+    # Nothing matched at all: fall back to column order
+    validate(need(ncol(counts) == length(sn),
+                  paste0("Sample names don't match the count column names, and the number ",
+                         "of samples (", length(sn), ") differs from the number of count ",
+                         "columns (", ncol(counts), "). Cannot align samples.")))
+    if (isolate(input$sampleInfoMode) == "upload") {
+      showNotification(
+        paste0("Neither SampleName", if ("FileName" %in% names(si)) " nor FileName" else "",
+               " matched the count file column names; assigning samples by column order. ",
+               "Check this is correct."),
+        type = "warning", duration = 10, id = "sampleAlignWarning")
+    }
+    appendLog("Samples assigned to count columns by column order (no name match).")
+    colnames(counts) <- sn
+    counts
+  })
+  
+  aligned_counts <- reactive({
+    counts <- named_counts()
+    
+    col_data <- as.data.frame(filtered_sample_info(), stringsAsFactors = FALSE)
+    col_data$SampleName <- as.character(col_data$SampleName)
+    rownames(col_data)  <- col_data$SampleName
+    
+    # Subset AND reorder count columns to match the selected sample-info rows
+    counts <- counts[, col_data$SampleName, drop = FALSE]
+    
+    list(counts = counts, col_data = col_data)
+  })
+  
   # Preview count data input
   output$previewTable <- renderTable({
-    counts <- counts_data()$counts
-    # For featureCounts RDS, columns are BAM paths — rename to sample names.
-    # For plain count tables, columns are already sample names; only rename if lengths match.
-    if (ncol(counts) == nrow(sample_info())) {
-      colnames(counts) <- sample_info()$SampleName
-    }
-    # Subset to selected samples for preview
-    fsi <- filtered_sample_info()
-    keep_cols <- colnames(counts) %in% as.character(fsi$SampleName)
-    if (any(keep_cols)) counts <- counts[, keep_cols, drop = FALSE]
+    counts <- aligned_counts()$counts
     head_df <- head(counts)
     head_df <- cbind(GeneID = rownames(head_df), head_df)
     head_df
@@ -1711,17 +1817,11 @@ server <- function(input, output, session) {
       )
       
       # Proceed
-      counts <- counts_data()$counts
-      # For featureCounts RDS, column names are BAM paths — rename to sample names.
-      # For plain count tables, columns are already sample names; only rename if lengths match.
-      if (ncol(counts) == nrow(sample_info())) {
-        colnames(counts) <- sample_info()$SampleName
-      }
-      col_data <- filtered_sample_info()
-      
-      # Subset counts to only selected samples
-      keep_samples <- colnames(counts) %in% as.character(col_data$SampleName)
-      counts <- counts[, keep_samples, drop = FALSE]
+      # Count columns aligned to sample info by name (see aligned_counts()),
+      # already subset to the selected samples and in sample-info row order.
+      ac       <- aligned_counts()
+      counts   <- ac$counts
+      col_data <- ac$col_data
       
       # set group levels
       col_data$Group <- factor(col_data$Group, levels = isolate(input$groupOrder))
@@ -1917,7 +2017,15 @@ server <- function(input, output, session) {
       appendLog("Computing vst...")
       showNotification("Computing vst...", type="message")
       
-      vsd <- vst(dds, blind = TRUE)
+      # Two variance-stabilised matrices:
+      #  - vsd_qc (blind = TRUE): unsupervised QC — PCA, scree, loadings,
+      #    most-variable-genes heatmap. Ignores the design so it can't bias QC.
+      #  - vsd (blind = FALSE): downstream plots of DE genes — DE heatmap,
+      #    boxplots, VST download. Uses the design-aware dispersion trend already
+      #    fitted by DESeq(), avoiding over-shrinkage when the treatment effect is
+      #    large (per the DESeq2 vignette). It does not use group labels directly.
+      vsd_qc <- vst(dds, blind = TRUE)
+      vsd    <- vst(dds, blind = FALSE)
       
       incProgress(0.1)
       
@@ -1980,15 +2088,16 @@ server <- function(input, output, session) {
       appendLog("PCA analysis...")
       showNotification("PCA analysis...", type="message")
       
-      # PCA on vst
-      mat <- assay(vsd)
+      # PCA on blind vst (unsupervised QC)
+      mat <- assay(vsd_qc)
       pcDat <- prcomp(t(mat), center = TRUE, scale. = FALSE)
       percentVar <- round(100 * (pcDat$sdev^2 / sum(pcDat$sdev^2)), 1)
       
       # Convert PCA results to a dataframe
       pca_df <- as.data.frame(pcDat$x)
-      pca_df$SampleName <- filtered_sample_info()$SampleName  # Add sample names
-      pca_df$Group <- filtered_sample_info()$Group  # Add group info
+      # Take labels from the object itself so they always match the PCA rows
+      pca_df$SampleName <- colnames(vsd_qc)
+      pca_df$Group      <- colData(vsd_qc)$Group
       
       
       incProgress(0.2)
@@ -1999,7 +2108,7 @@ server <- function(input, output, session) {
       
     })
     # Output from reactive expression
-    list(dds = dds, res = res, res_shrunk = res_shrunk, vsd = vsd, pca_df = pca_df, percentVar = percentVar,
+    list(dds = dds, res = res, res_shrunk = res_shrunk, vsd = vsd, vsd_qc = vsd_qc, pca_df = pca_df, percentVar = percentVar,
          res_entrez = res_entrez, unfiltered_dds = unfiltered_dds, pcDat = pcDat)
     
   })
@@ -2294,7 +2403,13 @@ server <- function(input, output, session) {
     req(analysisResults())
     
     res <- analysisResults()$res
-    vsd <- analysisResults()$vsd
+    # Most-variable heatmap is unsupervised QC -> blind VST;
+    # DE-gene heatmap is a downstream plot -> design-aware VST.
+    vsd <- if (input$heatmapGeneSource == "variance") {
+      analysisResults()$vsd_qc
+    } else {
+      analysisResults()$vsd
+    }
     
     # Get expression data
     mat <- assay(vsd)
