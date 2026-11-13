@@ -4464,8 +4464,10 @@ server <- function(input, output, session) {
                                          filter_mode = filt_mode)
       genesets  <- list()
       sig_dfs   <- list()   # store per-contrast significant results with correct stats
+      tested    <- list()   # per-contrast genes actually tested (non-NA padj) — GO universe
       genesets[[primary_label]] <- primary_data$genes
       sig_dfs[[primary_label]]  <- primary_data$sig_df
+      tested[[primary_label]]   <- rownames(primary_data$res_df)
       
       extras <- extraContrasts()
       incProgress(0.3)
@@ -4477,6 +4479,7 @@ server <- function(input, output, session) {
                                  filter_mode = filt_mode)
         genesets[[x$label]] <- dat$genes
         sig_dfs[[x$label]]  <- dat$sig_df
+        tested[[x$label]]   <- rownames(dat$res_df)
         incProgress(0.3 / max(length(extras), 1))
       }
       
@@ -4486,7 +4489,8 @@ server <- function(input, output, session) {
       all_genes <- unique(unlist(genesets))
       membership_mat <- sapply(genesets, function(gs) all_genes %in% gs)
       rownames(membership_mat) <- all_genes
-      vennSets(list(genesets = genesets, sig_dfs = sig_dfs, membership = membership_mat))
+      vennSets(list(genesets = genesets, sig_dfs = sig_dfs, tested = tested,
+                    membership = membership_mat))
       
       incProgress(0.4)
     })
@@ -5113,6 +5117,46 @@ server <- function(input, output, session) {
     NULL
   })
   
+  # Helper: build the GO over-representation universe for a gene set.
+  # The universe is the set of genes that *could* have entered the DE set, i.e.
+  # genes actually tested (non-NA padj) in the contrast(s) that define it:
+  #   - INTERACTION      : genes tested in the interaction contrast
+  #   - UNIQUE__<A>      : genes tested in A (membership requires sig in A;
+  #                        "not sig elsewhere" does not require being tested there)
+  #   - PAIR__<A|||B...> : genes tested in every selected contrast (intersection)
+  #   - ALL_SHARED       : genes tested in every contrast (intersection)
+  # Gene IDs are mapped to Entrez via res_entrez, the same mapping (and gene
+  # lengths) used everywhere else, so the covariate stays aligned.
+  build_go_universe <- function(choice, universe_gene_ids) {
+    res_entrez <- analysisResults()$res_entrez
+    re <- res_entrez[res_entrez$GeneIDs %in% universe_gene_ids & !is.na(res_entrez$ENTREZID),
+                     c("GeneIDs", "ENTREZID", "gene_lengths")]
+    re <- re[!duplicated(re$ENTREZID), , drop = FALSE]
+    appendLog(sprintf("Compare GO universe (%s): %d tested genes, %d with Entrez IDs.",
+                      choice, length(unique(universe_gene_ids)), nrow(re)))
+    list(universe_entrez  = as.character(re$ENTREZID),
+         universe_lengths = setNames(as.numeric(re$gene_lengths), re$ENTREZID))
+  }
+  
+  venn_tested_genes <- function(vs, choice) {
+    tested <- vs$tested
+    if (is.null(tested)) {
+      # Fallback (shouldn't occur): genes tested in the primary contrast
+      re <- analysisResults()$res_entrez
+      return(unique(re$GeneIDs[!is.na(re$padj)]))
+    }
+    contrib <- if (choice == "ALL_SHARED") {
+      names(tested)
+    } else if (startsWith(choice, "UNIQUE__")) {
+      sub("^UNIQUE__", "", choice)
+    } else if (startsWith(choice, "PAIR__")) {
+      strsplit(sub("^PAIR__", "", choice), "\\|\\|\\|")[[1]]
+    } else {
+      names(tested)
+    }
+    Reduce(intersect, tested[contrib])
+  }
+  
   # Helper: get ENTREZ IDs for a selected Venn region or interaction result
   get_entrez_for_set <- function(choice) {
     req(analysisResults())
@@ -5161,8 +5205,13 @@ server <- function(input, output, session) {
                                  res_entrez[, c("GeneIDs", "gene_lengths")],
                                  by = "GeneIDs", all.x = TRUE)
       
+      # ixn_df is already restricted to non-NA padj, so its GeneIDs are the tested set
+      uni <- build_go_universe(choice, ixn_df$GeneID)
+      
       return(list(symbols = symbols, entrez = mapped$ENTREZID, mapped = mapped,
-                  res_entrez_subset = res_entrez_subset))
+                  res_entrez_subset = res_entrez_subset,
+                  universe_entrez = uni$universe_entrez,
+                  universe_lengths = uni$universe_lengths))
     }
     
     # ---- Venn-based pathway (original logic) ----
@@ -5241,8 +5290,12 @@ server <- function(input, output, session) {
                                res_entrez[, c("GeneIDs", "gene_lengths")], 
                                by = "GeneIDs", all.x = TRUE)
     
+    uni <- build_go_universe(choice, venn_tested_genes(vs, choice))
+    
     list(symbols = symbols, entrez = mapped$ENTREZID, mapped = mapped,
-         res_entrez_subset = res_entrez_subset)
+         res_entrez_subset = res_entrez_subset,
+         universe_entrez = uni$universe_entrez,
+         universe_lengths = uni$universe_lengths)
   }
   
   # ---- Compare GO ----
@@ -5254,12 +5307,13 @@ server <- function(input, output, session) {
       sp   <- isolate(goSpeciesCode())
       direction <- isolate(input$cmpGOdirection)
       
-      universe_entrez <- analysisResults()$res_entrez$ENTREZID
-      gene_lengths_vec <- as.numeric(analysisResults()$res_entrez$gene_lengths)
-      names(gene_lengths_vec) <- analysisResults()$res_entrez$ENTREZID
+      # Universe = genes tested in the contrast(s) defining this set (see build_go_universe)
+      universe_entrez <- info$universe_entrez
+      validate(need(length(universe_entrez) > 0,
+                    "Empty GO universe: no tested genes with Entrez IDs for this set."))
       
       # If lengths are unavailable (plain count table), set covariate to NULL
-      cov_vec <- gene_lengths_vec[universe_entrez]
+      cov_vec <- info$universe_lengths[universe_entrez]
       covariate_arg <- if (all(is.na(cov_vec))) NULL else cov_vec
       
       if (is.null(covariate_arg)) {
